@@ -21,9 +21,9 @@ import json
 import os
 import re
 import shutil
-import tarfile
 import tempfile
 import threading
+import zipfile
 import traceback
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -1455,8 +1455,9 @@ def _msg(text):
 
 
 def prepare_archive(site, year, month, day, hour):
-    """Bundle the hour's raw Level 2 volumes into SITEyyyymmdd_HHUTC.tar.bz2
-    (files are pulled from the volume cache; anything missing is fetched)."""
+    """Bundle the hour's raw Level 2 volumes into SITEyyyymmdd_HHUTC.zip
+    (files are pulled from the volume cache; anything missing is fetched).
+    The volumes are internally compressed already, so members are stored."""
     m = re.match(r"\s*([A-Za-z]{4})\b", site or "")
     if not m:
         raise gr.Error("Pick a site first.")
@@ -1468,14 +1469,14 @@ def prepare_archive(site, year, month, day, hour):
         raise gr.Error("No Level 2 volumes for this selection.")
     with ThreadPoolExecutor(max_workers=6) as ex:
         list(ex.map(lambda k: _safe_download(bucket, k, VOL_CACHE_DIR), keys))
-    out = os.path.join(VOL_CACHE_DIR, f"{site}{date:%Y%m%d}_{hr:02d}UTC.tar.bz2")
+    out = os.path.join(VOL_CACHE_DIR, f"{site}{date:%Y%m%d}_{hr:02d}UTC.zip")
     if not os.path.exists(out):
         tmp = out + ".part"
-        with tarfile.open(tmp, "w:bz2", compresslevel=1) as tf:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
             for k in keys:
                 p = os.path.join(VOL_CACHE_DIR, os.path.basename(k))
                 if os.path.exists(p):
-                    tf.add(p, arcname=os.path.basename(k))
+                    zf.write(p, arcname=os.path.basename(k))
         os.replace(tmp, out)
     return out
 
@@ -1572,6 +1573,37 @@ OG_HEAD = f"""
 <meta name="twitter:card" content="summary_large_image"/>
 <meta name="twitter:title" content="NEXRAD level 2 browser"/>
 <meta name="twitter:image" content="{THUMB_URL}"/>
+<script>
+// show only elapsed time in progress timers (strip Gradio's "/eta" part)
+addEventListener('DOMContentLoaded', function () {{
+  var rxFull = /^\\s*\\d+(?:\\.\\d+)?\\/\\d+(?:\\.\\d+)?s\\s*$/;
+  function fixEl(el) {{
+    if (!el || !el.childNodes || !rxFull.test(el.textContent)) return;
+    var seen = false;
+    el.childNodes.forEach(function (n) {{
+      if (n.nodeType !== 3) return;
+      var v = n.nodeValue;
+      if (!seen) {{
+        var m = v.match(/^(\\s*\\d+(?:\\.\\d+)?)\\/\\d+(?:\\.\\d+)?(s\\s*)?$/);
+        if (m) {{ n.nodeValue = m[1] + (m[2] || ''); seen = true; return; }}
+        var i = v.indexOf('/');
+        if (i >= 0) {{ n.nodeValue = v.slice(0, i); seen = true; }}
+      }} else if (/^\\d+(?:\\.\\d+)?$/.test(v.trim())) {{
+        n.nodeValue = '';
+      }}
+    }});
+  }}
+  new MutationObserver(function (ms) {{
+    ms.forEach(function (m) {{
+      if (m.type === 'characterData') fixEl(m.target.parentElement);
+      if (m.addedNodes) m.addedNodes.forEach(function (an) {{
+        if (an.nodeType === 1 && an.textContent.length < 24) fixEl(an);
+      }});
+    }});
+  }}).observe(document.body, {{subtree: true, characterData: true,
+                               childList: true}});
+}});
+</script>
 """
 
 with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
@@ -1588,7 +1620,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         hour_dd = gr.Dropdown(HOURS, value="18:00", label="Hour (UTC)", scale=1)
         with gr.Column(scale=1, min_width=170):
             go = gr.Button("Load hour", variant="primary")
-            dl = gr.DownloadButton("Download raw (.tar.bz2)",
+            dl = gr.DownloadButton("Download raw (.zip)",
                                    interactive=False, size="sm")
     status = gr.Markdown()
     map_html = gr.HTML()
