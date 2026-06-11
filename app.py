@@ -1555,7 +1555,9 @@ HEADER_HTML = f"""
     <p style="color:#C8C6C7;font-size:13px;margin:2px 0">
       Browse one hour of archived WSR-88D base scans (SAILS-aware) from the
       <a href="https://registry.opendata.aws/noaa-nexrad/" target="_blank"
-         style="color:#FF8136">AWS Open Data archive</a>.</p>
+         style="color:#FF8136">AWS Open Data archive</a> ·
+      <a href="https://github.com/swnesbitt/nexrad-level2-browser"
+         target="_blank" style="color:#FF8136">GitHub</a>.</p>
   </div>
 </div>"""
 
@@ -1603,7 +1605,8 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         "· radar processing by [Py-ART](https://arm-doe.github.io/pyart/) "
         "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
         "· colormaps from [cmweather](https://github.com/openradar/cmweather) "
-        "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/)."
+        "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
+        "· code on [GitHub](https://github.com/swnesbitt/nexrad-level2-browser)."
     )
 
     shared = gr.State(False)
