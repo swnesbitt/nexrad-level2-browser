@@ -895,16 +895,9 @@ QUAD_PAGE = """<!DOCTYPE html>
         background:var(--ib);border:1px solid var(--ib3);color:#fff;
         font:12px 'Source Sans 3',sans-serif;padding:4px 10px;
         border-radius:4px}
- #ovmenu{position:absolute;top:10px;right:10px;z-index:1100;
-        background:rgba(19,41,75,.92);border:1px solid var(--ib3);
-        border-top:4px solid var(--io);border-radius:4px;padding:10px;
-        color:#fff;font:12px 'Source Sans 3',sans-serif;display:flex;
-        flex-direction:column;gap:8px;width:118px}
- #ovmenu b{font-family:'Montserrat',sans-serif;font-size:10px;
-        letter-spacing:.06em;text-transform:uppercase;opacity:.85}
- #ovmenu label{display:flex;gap:6px;align-items:flex-start;cursor:pointer;
-        line-height:1.25}
- #ovmenu input{accent-color:var(--io);margin-top:1px}
+ .ck{display:flex;gap:5px;align-items:center;cursor:pointer;
+     white-space:nowrap;color:var(--sl);font-size:12px}
+ .ck input{accent-color:var(--io)}
  .leaflet-top.leaflet-left{top:30px}   /* keep zoom clear of the field chip */
  .panel{display:none}
  .panel .leaflet-control-zoom{display:none}
@@ -926,17 +919,15 @@ QUAD_PAGE = """<!DOCTYPE html>
  </svg>
 </div>
 <div id="toast">Link copied</div>
-<div id="ovmenu"><b>Overlays</b>
-  <label><input type="checkbox" id="ck-counties" checked/><span>County boundaries</span></label>
-  <label><input type="checkbox" id="ck-interstates" checked/><span>Highways</span></label>
-</div>
 <div id="bar">
  <div id="row1">
    <button id="play">&#9654;</button>
    <span id="modes"></span>
-   <input id="slider" type="range" min="0" max="0" value="0" step="1"/>
+   <label class="ck"><input type="checkbox" id="ck-counties" checked/><span>Counties</span></label>
+   <label class="ck"><input type="checkbox" id="ck-interstates" checked/><span>Highways</span></label>
    <span style="opacity:.7">opacity</span>
    <input id="op" type="range" min="10" max="100" value="100"/>
+   <input id="slider" type="range" min="0" max="0" value="0" step="1"/>
  </div>
  <div id="label"></div>
 </div>
@@ -945,6 +936,7 @@ const DATA = __DATA__;
 const SITE = [__SLAT__, __SLON__];
 const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
+const INIT_VIEW = __VIEW__;   // [lat, lon, zoom] from a share link, or null
 let mode = __MODE__;
 if (mode !== 'quad' && !DATA.some(fd => fd.name === mode))
   mode = DATA[0].name;
@@ -1171,6 +1163,10 @@ setMode(mode);
 setTimeout(function(){
   panels.forEach(p=>p.map.invalidateSize(false));
   const vis = panels.find(p=>p.wrap.style.display !== 'none') || panels[0];
+  if (INIT_VIEW && INIT_VIEW.length === 3) {
+    vis.map.setView([INIT_VIEW[0], INIT_VIEW[1]], INIT_VIEW[2]);
+    return;
+  }
   const mr = vis.fd.frames.length ? vis.fd.frames[0].maxr : 3e5;
   const dLat = mr/111320, dLon = mr/(111320*Math.cos(SITE[0]*Math.PI/180));
   vis.map.fitBounds(
@@ -1215,8 +1211,11 @@ document.addEventListener('keydown', e=>{
   if(e.key==='ArrowLeft') show(Math.max(idx-1,0));
 });
 document.getElementById('share').addEventListener('click', ()=>{
+  const vis = panels.find(p=>p.wrap.style.display !== 'none') || panels[0];
+  const c = vis.map.getCenter(), z = vis.map.getZoom();
   const url = SHARE_BASE + '&field=' +
-    encodeURIComponent(mode === 'quad' ? QUADF : mode);
+    encodeURIComponent(mode === 'quad' ? QUADF : mode) +
+    '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + '&zoom=' + z;
   const done=()=>{const t=document.getElementById('toast');
     t.style.display='block'; setTimeout(()=>t.style.display='none',1600);};
   if(navigator.clipboard&&navigator.clipboard.writeText)
@@ -1238,13 +1237,13 @@ document.getElementById('ck-counties').addEventListener('change', e=>{
     if (countyLayers){ countyLayers.forEach((l,i)=>l.addTo(panels[i].map));
       return; }
     if (countyLoading) return;
-    countyLoading = true; lbl.textContent='County boundaries…';
+    countyLoading = true; lbl.textContent='Counties…';
     fetch(COUNTY_URL).then(r=>r.json()).then(gj=>{
       countyLayers = panels.map(()=>L.geoJSON(gj,{pane:'refpane',style:
         {color:'#C8C6C7',weight:0.7,opacity:1.0,fill:false}}));
       if (document.getElementById('ck-counties').checked)
         countyLayers.forEach((l,i)=>l.addTo(panels[i].map));
-      lbl.textContent='County boundaries';
+      lbl.textContent='Counties';
     }).catch(()=>{lbl.textContent='Counties (load failed)';})
       .finally(()=>{countyLoading=false;});
   } else if (countyLayers)
@@ -1286,11 +1285,14 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
 
-def _mode_page(tpl, field_name):
-    """Substitute the initial view mode into a cached bundle template.
-    The template is already HTML-escaped (srcdoc), so escape the JSON too."""
+def _mode_page(tpl, field_name, view=None):
+    """Substitute the initial view mode and optional [lat, lon, zoom] into a
+    cached bundle template. The template is already HTML-escaped (srcdoc),
+    so escape the JSON too."""
     mode = "quad" if field_name == QUAD else field_name
-    return tpl.replace("__MODE__", html_mod.escape(json.dumps(mode)))
+    return (tpl
+            .replace("__MODE__", html_mod.escape(json.dumps(mode)))
+            .replace("__VIEW__", html_mod.escape(json.dumps(view))))
 
 
 # ----------------------------------------------------------------------------- gradio callback
@@ -1305,7 +1307,8 @@ _INFLIGHT = {}
 _CACHE_LOCK = threading.Lock()
 
 
-def browse(site, field_name, year, month, day, hour, progress=None):
+def browse(site, field_name, year, month, day, hour, progress=None,
+           view=None):
     def _p(frac, desc):
         if progress is not None:
             try:
@@ -1333,7 +1336,7 @@ def browse(site, field_name, year, month, day, hour, progress=None):
             if tpl is not None:
                 _PAGE_CACHE.move_to_end(key_h)
         if tpl is not None:
-            return "", _mode_page(tpl, field_name)
+            return "", _mode_page(tpl, field_name, view)
         with _CACHE_LOCK:
             evt = _INFLIGHT.get(key_h)
             owner = evt is None
@@ -1345,11 +1348,11 @@ def browse(site, field_name, year, month, day, hour, progress=None):
             with _CACHE_LOCK:
                 tpl = _PAGE_CACHE.get(key_h)
             if tpl is not None:
-                return "", _mode_page(tpl, field_name)
+                return "", _mode_page(tpl, field_name, view)
             # fall through and compute ourselves if the other run failed
 
         try:
-            return _browse_compute(site, field_name, date, hr, _p)
+            return _browse_compute(site, field_name, date, hr, _p, view)
         finally:
             if owner:
                 with _CACHE_LOCK:
@@ -1373,7 +1376,7 @@ def _share_base(site, date, hr):
     return f"https://{host}/{qs}" if host else qs
 
 
-def _browse_compute(site, field_name, date, hr, _p):
+def _browse_compute(site, field_name, date, hr, _p, view=None):
     """Decode ALL fields in one pass over the hour's volumes; build and
     cache the 4 single-field pages plus the 4-panel page; return the one
     that was requested."""
@@ -1445,7 +1448,7 @@ def _browse_compute(site, field_name, date, hr, _p):
             _PAGE_CACHE[_hour_key(site, date, hr)] = tpl
             while len(_PAGE_CACHE) > _PAGE_CACHE_CAP:
                 _PAGE_CACHE.popitem(last=False)
-        return "", _mode_page(tpl, field_name)
+        return "", _mode_page(tpl, field_name, view)
     except Exception:
         return _msg("Unexpected error:\n```\n" + traceback.format_exc()[-1500:] + "\n```")
 
@@ -1559,9 +1562,7 @@ HEADER_HTML = f"""
     <p style="color:#C8C6C7;font-size:13px;margin:2px 0">
       Browse one hour of archived WSR-88D base scans (SAILS-aware) from the
       <a href="https://registry.opendata.aws/noaa-nexrad/" target="_blank"
-         style="color:#FF8136">AWS Open Data archive</a> ·
-      <a href="https://github.com/swnesbitt/nexrad-level2-browser"
-         target="_blank" style="color:#FF8136">GitHub</a>.</p>
+         style="color:#FF8136">AWS Open Data archive</a>.</p>
   </div>
 </div>"""
 
@@ -1641,14 +1642,22 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
         "· colormaps from [cmweather](https://github.com/openradar/cmweather) "
         "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
-        "· code on [GitHub](https://github.com/swnesbitt/nexrad-level2-browser)."
+        "· [Source code on GitHub](https://github.com/swnesbitt/nexrad-level2-browser)."
     )
 
     shared = gr.State(False)
+    view_st = gr.State(None)
 
     def init_values(request: gr.Request):
-        """Fast: restore dropdown values from URL query params."""
+        """Fast: restore dropdown values (and map view) from URL params."""
         q = dict(request.query_params) if request else {}
+        view = None
+        try:
+            if "lat" in q and "lon" in q and "zoom" in q:
+                view = [float(q["lat"]), float(q["lon"]),
+                        max(3, min(14, int(float(q["zoom"]))))]
+        except (TypeError, ValueError):
+            view = None
         site = q.get("site", "KILX").upper()[:4]
         field = q.get("field", "Reflectivity")
         if field not in FIELDS and field != QUAD:
@@ -1661,22 +1670,25 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         month = month if month in MONTHS else "06"
         day = day if day in DAYS else "29"
         hour = hour if hour in HOURS else "18:00"
-        return site, field, year, month, day, hour, ("site" in q or "year" in q)
+        return (site, field, year, month, day, hour,
+                ("site" in q or "year" in q), view)
 
-    def maybe_browse(is_shared, site, field, year, month, day, hour,
+    def maybe_browse(is_shared, view, site, field, year, month, day, hour,
                      progress=gr.Progress()):
         """Slow: auto-load on every visit — the default case on a plain
-        visit, the shared view when params are present."""
+        visit, the shared view (incl. map center/zoom) when params exist."""
         info, page = browse(site, field, year, month, day, hour,
-                            progress=progress)
+                            progress=progress, view=view)
         return info, page, gr.DownloadButton(interactive=bool(page))
 
     demo.load(
         init_values, None,
-        [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd, shared],
+        [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd, shared,
+         view_st],
     ).then(
         maybe_browse,
-        [shared, site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd],
+        [shared, view_st, site_tb, field_dd, year_dd, month_dd, day_dd,
+         hour_dd],
         [status, map_html, dl], show_progress_on=map_html,
     )
 
