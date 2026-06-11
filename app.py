@@ -904,6 +904,11 @@ QUAD_PAGE = """<!DOCTYPE html>
  .ck{display:flex;gap:5px;align-items:center;cursor:pointer;
      white-space:nowrap;color:var(--sl);font-size:12px}
  .ck input{accent-color:var(--io)}
+ .nodata{position:absolute;inset:0;z-index:900;display:flex;
+     align-items:center;justify-content:center;text-align:center;
+     pointer-events:none;color:var(--sl);background:rgba(12,29,56,.45);
+     font:600 13px 'Montserrat',sans-serif;letter-spacing:.05em;
+     text-transform:uppercase}
  .leaflet-top.leaflet-left{top:30px}   /* keep zoom clear of the field chip */
  .panel{display:none}
  .panel .leaflet-control-zoom{display:none}
@@ -993,6 +998,13 @@ function makePanel(fd, first){
   const cv = document.createElement('canvas'); cv.className = 'gl';
   const chip = document.createElement('div'); chip.className = 'chip';
   chip.textContent = fd.name; wrap.appendChild(chip);
+  if (!fd.frames.length) {
+    const nd = document.createElement('div'); nd.className = 'nodata';
+    nd.textContent = (fd.name.indexOf('reflectivity') > 0 ||
+                      fd.name.indexOf('Correlation') === 0)
+      ? 'Pre-polarimetric upgrade data' : 'No data for this hour';
+    wrap.appendChild(nd);
+  }
   // mini colorbar
   const cb = fd.cbar;
   const cwrap = document.createElement('div'); cwrap.className = 'pcbar';
@@ -1447,8 +1459,9 @@ def _browse_compute(site, field_name, date, hr, _p, view=None):
         _p(0.94, "Packing the all-field WebGL bundle (textures for every "
                  "field load once)…")
         slat, slon = site_ll
-        bundle_fields = {fn: fr for fn, fr in by_field.items() if fr}
-        tpl = build_bundle_page(bundle_fields, site, slat, slon,
+        # keep empty fields in the bundle: their panels show an explanatory
+        # message (e.g. dual-pol fields on pre-upgrade data)
+        tpl = build_bundle_page(by_field, site, slat, slon,
                                 _share_base(site, date, hr))
         with _CACHE_LOCK:
             _PAGE_CACHE[_hour_key(site, date, hr)] = tpl
