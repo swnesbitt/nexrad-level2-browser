@@ -70,6 +70,12 @@ def _init_record_fixed(self, recnum):
 
 _nx2.NEXRADLevel2File.init_record = _init_record_fixed
 
+# --- patch 2: legacy Message 1 declares range-to-first-gate as signed
+# halfwords (they're negative for split cuts, e.g. -375 m), but xradar reads
+# them unsigned -> velocity sweeps land ~65 km downrange in pre-2008 data.
+_nx2.MSG_1["sur_range_first"] = _nx2.SINT2
+_nx2.MSG_1["doppler_range_first"] = _nx2.SINT2
+
 # --- link previews: Gradio's `head=` is injected client-side, so social
 # scrapers only see the static defaults baked into its index.html template.
 # Patch the template on disk at startup.
