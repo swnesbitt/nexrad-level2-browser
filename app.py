@@ -539,8 +539,8 @@ LEAFLET_PAGE = """<!DOCTYPE html>
   <canvas id="cbcanvas" width="16" height="320"></canvas>
   <div id="cbticks"></div></div>
 <div id="ovmenu"><b>Overlays</b>
-  <label><input type="checkbox" id="ck-counties"/><span>County boundaries</span></label>
-  <label><input type="checkbox" id="ck-interstates"/><span>Interstates</span></label>
+  <label><input type="checkbox" id="ck-counties" checked/><span>County boundaries</span></label>
+  <label><input type="checkbox" id="ck-interstates" checked/><span>Highways</span></label>
 </div>
 <div id="bar">
  <div id="row1">
@@ -927,8 +927,8 @@ QUAD_PAGE = """<!DOCTYPE html>
 </div>
 <div id="toast">Link copied</div>
 <div id="ovmenu"><b>Overlays</b>
-  <label><input type="checkbox" id="ck-counties"/><span>County boundaries</span></label>
-  <label><input type="checkbox" id="ck-interstates"/><span>Interstates</span></label>
+  <label><input type="checkbox" id="ck-counties" checked/><span>County boundaries</span></label>
+  <label><input type="checkbox" id="ck-interstates" checked/><span>Highways</span></label>
 </div>
 <div id="bar">
  <div id="row1">
@@ -1254,6 +1254,9 @@ document.getElementById('ck-interstates').addEventListener('change', e=>{
   if (e.target.checked) roadLayers.forEach((l,i)=>l.addTo(panels[i].map));
   else roadLayers.forEach((l,i)=>panels[i].map.removeLayer(l));
 });
+// both overlays start enabled
+document.getElementById('ck-counties').dispatchEvent(new Event('change'));
+document.getElementById('ck-interstates').dispatchEvent(new Event('change'));
 
 // stagger texture preloads
 panels.forEach((p,pi)=>p.fd.frames.forEach((_,i)=>
