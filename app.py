@@ -923,11 +923,11 @@ QUAD_PAGE = """<!DOCTYPE html>
  <div id="row1">
    <button id="play">&#9654;</button>
    <span id="modes"></span>
+   <input id="slider" type="range" min="0" max="0" value="0" step="1"/>
    <label class="ck"><input type="checkbox" id="ck-counties" checked/><span>Counties</span></label>
    <label class="ck"><input type="checkbox" id="ck-interstates" checked/><span>Highways</span></label>
    <span style="opacity:.7">opacity</span>
    <input id="op" type="range" min="10" max="100" value="100"/>
-   <input id="slider" type="range" min="0" max="0" value="0" step="1"/>
  </div>
  <div id="label"></div>
 </div>
