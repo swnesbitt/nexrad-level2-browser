@@ -1448,11 +1448,7 @@ setTimeout(function(){
     vis.map.setView([INIT_VIEW[0], INIT_VIEW[1]], INIT_VIEW[2]);
     return;
   }
-  const mr = vis.fd.frames.length ? vis.fd.frames[0].maxr : 3e5;
-  const dLat = mr/111320, dLon = mr/(111320*Math.cos(SITE[0]*Math.PI/180));
-  vis.map.fitBounds(
-    [[SITE[0]-dLat,SITE[1]-dLon],[SITE[0]+dLat,SITE[1]+dLon]],
-    {padding:[4,4]});
+  vis.map.setView(SITE, 8);   // default zoom on load
 }, 90);
 
 // controls
@@ -1573,12 +1569,12 @@ if (INIT_DEAL && DEAL && DEAL.frames.length){
 
 // ------------------------------------------------------------- real-time
 if (RT){
-  // dealias reprocess is archive-only (data still arriving)
-  if (!DEAL) ckDeal.parentElement.style.display = 'none';
-  // auto-refresh the trailing hour every 5 minutes via the parent page
+  // auto-refresh the trailing hour every 5 minutes via the parent page;
+  // keep the dealias state across refreshes by picking the right trigger
   setTimeout(()=>{
     try {
-      const h = parent.document.getElementById('rt-refresh');
+      const id = (ckDeal && ckDeal.checked) ? 'dax-trigger' : 'rt-refresh';
+      const h = parent.document.getElementById(id);
       (h.querySelector('button') || h).click();
     } catch (err) {}
   }, 5 * 60 * 1000);
@@ -1753,21 +1749,23 @@ function ellipsize(ctx, text, maxw){
   return text+'\\u2026';
 }
 
+const LOGO_IMG = new (window.Image)();
+LOGO_IMG.src = 'data:image/png;base64,__LOGOB64__';
 function drawLogo(ctx, x, y, s){
-  // CliMAS Block-I roundel, drawn natively at any scale
+  // the actual CliMAS logo, circle-cropped
+  if (!LOGO_IMG.complete || !LOGO_IMG.naturalWidth) return;
   ctx.save();
-  ctx.translate(x, y); ctx.scale(s/400, s/400);
-  ctx.beginPath(); ctx.arc(200,200,200,0,2*Math.PI);
-  ctx.fillStyle = '#13294B'; ctx.fill();
-  const blockI = new Path2D(
-    'M150 70 h100 v42 h-26 v76 h26 v42 h-100 v-42 h26 v-76 h-26 z');
-  ctx.lineWidth = 10; ctx.strokeStyle = '#fff';
-  ctx.fillStyle = '#FF5F05';
-  ctx.fill(blockI); ctx.stroke(blockI);
-  ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
-  ctx.font = "600 28px 'Source Sans 3', sans-serif";
-  ['Climate,','Meteorology &','Atmospheric','Sciences'].forEach((t,i)=>
-    ctx.fillText(t, 200, 268+30*i));
+  ctx.beginPath();
+  ctx.arc(x+s/2, y+s/2, s/2, 0, 2*Math.PI);
+  ctx.clip();
+  ctx.drawImage(LOGO_IMG, x, y, s, s);
+  ctx.restore();
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x+s/2, y+s/2, s/2, 0, 2*Math.PI);
+  ctx.lineWidth = Math.max(2, s*0.012);
+  ctx.strokeStyle = 'rgba(255,255,255,.85)';
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1933,6 +1931,23 @@ show(0);
 </script></body></html>"""
 
 
+# small base64 of the CliMAS logo for export stamping (from logo.png)
+def _export_logo_b64():
+    p = os.path.join(os.path.dirname(__file__), "logo.png")
+    if not os.path.exists(p):
+        return ""
+    try:
+        im = Image.open(p).convert("RGB").resize((512, 512), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", optimize=True)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+
+EXPORT_LOGO_B64 = _export_logo_b64()
+
+
 def build_bundle_page(by_field, site, slat, slon, share_base=""):
     """One page carrying ALL fields' polar textures; the requested view
     (single field or 2×2) is substituted into __MODE__ at serve time, so
@@ -1948,9 +1963,10 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             .replace("__SLON__", f"{slon:.5f}")
             .replace("__SITE__", site)
             .replace("__WARNURL__", WARN_URL)
+            .replace("__LOGOB64__", EXPORT_LOGO_B64)
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 245px);'
+            f'style="width:100%;height:calc(100vh - 205px);'
             f'min-height:480px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
@@ -2010,16 +2026,19 @@ def _rt_keys(site):
     return bucket, sorted(set(sel)), now
 
 
-_RT_CACHE = {}        # site -> (timestamp, tpl)
+_RT_CACHE = {}        # site -> dict(ts, tpl, by_field, site_ll, has_deal)
 _RT_TTL = 150         # seconds — refresh cadence is 300 s
 
 
-def _realtime_compute(site, field_name, _p, view):
+def _realtime_compute(site, field_name, _p, view, want_deal=False):
     """Decode the trailing hour. Short-lived cache + in-flight dedup keep
-    reloads and concurrent viewers from re-decoding live data."""
-    cached = _RT_CACHE.get(site)
-    if cached and time_mod.time() - cached[0] < _RT_TTL:
-        return "", _mode_page(cached[1], field_name, view, rt=True)
+    reloads and concurrent viewers from re-decoding live data. Dealiasing
+    is supported: the cached raw decode is upgraded in place."""
+    c = _RT_CACHE.get(site)
+    fresh = c and time_mod.time() - c["ts"] < _RT_TTL
+    if fresh and (not want_deal or c["has_deal"]):
+        return "", _mode_page(c["tpl"], field_name, view,
+                              deal=want_deal, rt=True)
     key_rt = ("RT", site)
     with _CACHE_LOCK:
         evt = _INFLIGHT.get(key_rt)
@@ -2029,11 +2048,13 @@ def _realtime_compute(site, field_name, _p, view):
     if not owner:
         _p(0.5, "Live hour already rendering — attaching…")
         evt.wait(600)
-        cached = _RT_CACHE.get(site)
-        if cached:
-            return "", _mode_page(cached[1], field_name, view, rt=True)
+        c = _RT_CACHE.get(site)
+        if c and (not want_deal or c["has_deal"]):
+            return "", _mode_page(c["tpl"], field_name, view,
+                                  deal=want_deal, rt=True)
     try:
-        return _realtime_compute_inner(site, field_name, _p, view)
+        return _realtime_compute_inner(site, field_name, _p, view,
+                                       want_deal)
     finally:
         if owner:
             with _CACHE_LOCK:
@@ -2042,22 +2063,44 @@ def _realtime_compute(site, field_name, _p, view):
                 ev.set()
 
 
-def _realtime_compute_inner(site, field_name, _p, view):
+def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
     _p(0.02, f"Listing the last 60 minutes for {site}…")
     bucket, keys, now = _rt_keys(site)
     if not keys:
         return _msg(f"No Level 2 volumes from {site} in the last hour — "
                     f"the radar may be down or data is still in transit.")
     n = len(keys)
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = [ex.submit(_safe_download, bucket, k, VOL_CACHE_DIR)
-                for k in keys]
-        for i, _ in enumerate(as_completed(futs)):
-            _p(0.04 + 0.20 * (i + 1) / n,
-               f"Fetching live volumes… {i + 1}/{n}")
-    by_field, site_ll = _decode_keys(bucket, keys, _p, 0.26, 0.66,
-                                     "Decoding live volumes")
-    _prune_vol_cache()
+    c = _RT_CACHE.get(site)
+    if (c and time_mod.time() - c["ts"] < _RT_TTL and want_deal
+            and not c["has_deal"]):
+        # fresh raw decode exists — only the dealias pass is needed
+        by_field = dict(c["by_field"])
+        site_ll = c["site_ll"]
+    else:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futs = [ex.submit(_safe_download, bucket, k, VOL_CACHE_DIR)
+                    for k in keys]
+            for i, _ in enumerate(as_completed(futs)):
+                _p(0.04 + 0.16 * (i + 1) / n,
+                   f"Fetching live volumes… {i + 1}/{n}")
+        by_field, site_ll = _decode_keys(bucket, keys, _p, 0.22, 0.50,
+                                         "Decoding live volumes")
+        _prune_vol_cache()
+    if want_deal:
+        dframes, done = [], 0
+        for i in range(0, n, 2):
+            chunk = keys[i:i + 2]
+            with _DECODE_SEM:
+                with ProcessPoolExecutor(max_workers=N_PROC) as px:
+                    pfuts = [px.submit(dealias_volume, bucket, k,
+                                       VOL_CACHE_DIR) for k in chunk]
+                    for fut in as_completed(pfuts):
+                        done += 1
+                        _p(0.72 + 0.22 * done / n,
+                           f"Dealiasing live volumes {done}/{n}…")
+                        dframes.extend(fut.result())
+        dframes.sort(key=lambda f: f["time"])
+        by_field[DEALIAS_NAME] = dframes[:MAX_FRAMES]
     if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
         site_ll = None
     if site_ll is None:
@@ -2070,13 +2113,25 @@ def _realtime_compute_inner(site, field_name, _p, view):
             pass
     if site_ll is None or not any(by_field.values()):
         return _msg(f"Could not decode any live data from {site}.")
+    if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
+        site_ll = None
+    if site_ll is None:
+        try:
+            from pyart.io.nexrad_common import NEXRAD_LOCATIONS
+            loc = NEXRAD_LOCATIONS.get(site)
+            if loc:
+                site_ll = (loc["lat"], loc["lon"])
+        except Exception:
+            return _msg(f"Could not locate {site}.")
     _p(0.96, "Packing live bundle…")
     tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
                             f"?site={site}&rt=1")
-    _RT_CACHE[site] = (time_mod.time(), tpl)
-    for k in [k for k in _RT_CACHE if k != site][8:]:
+    _RT_CACHE[site] = dict(ts=time_mod.time(), tpl=tpl, by_field=by_field,
+                           site_ll=site_ll,
+                           has_deal=DEALIAS_NAME in by_field)
+    for k in [k for k in _RT_CACHE if k != site][4:]:
         _RT_CACHE.pop(k, None)
-    return "", _mode_page(tpl, field_name, view, rt=True)
+    return "", _mode_page(tpl, field_name, view, deal=want_deal, rt=True)
 
 
 def browse(site, field_name, year, month, day, hour, progress=None,
@@ -2094,7 +2149,7 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             return _msg("Pick a NEXRAD site (e.g. KTLX, KILX, PHWA).")
         site = m.group(1).upper()
         if realtime:
-            return _realtime_compute(site, field_name, _p, view)
+            return _realtime_compute(site, field_name, _p, view, want_deal)
         try:
             date = dt.date(int(year), int(month), int(day))
         except ValueError:
@@ -2378,9 +2433,22 @@ ILLINI_CSS = """
 .gradio-container .prose, .gradio-container .prose p { color: #C8C6C7 !important;
   font-size: 13px !important; }
 .gradio-container .prose p { margin: 2px 0 !important; }
-.gradio-container .block { padding: 4px 10px !important; }
-.gradio-container .form { gap: 4px !important; }
-.gradio-container .gap, .gradio-container .gradio-row { gap: 6px !important; }
+.gradio-container .block { padding: 3px 8px !important; }
+.gradio-container .form { gap: 3px !important; }
+.gradio-container .gap, .gradio-container .gradio-row { gap: 5px !important; }
+/* compact one-row control strip */
+#ctrl-row { flex-wrap: nowrap !important; }
+.gradio-container .block > label,
+.gradio-container span[data-testid="block-info"] {
+  font-size: 11px !important; margin-bottom: 1px !important; }
+.gradio-container input, .gradio-container .gradio-dropdown input {
+  font-size: 13px !important; }
+.gradio-container .gradio-dropdown { min-height: 0 !important; }
+#mode-sw .wrap { flex-direction: row !important; gap: 3px !important;
+  flex-wrap: nowrap !important; }
+#mode-sw label { padding: 3px 7px !important; font-size: 12px !important; }
+#ctrl-row button { font-size: 13px !important; padding: 6px 8px !important; }
+@media (max-width: 900px) { #ctrl-row { flex-wrap: wrap !important; } }
 footer { display: none !important; }
 #dax-trigger, #rt-refresh { display: none !important; }
 @media (max-width: 700px) {
@@ -2473,18 +2541,23 @@ gr.set_static_paths(paths=[VOL_CACHE_DIR])   # serves warnings.json
 with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                theme=ILLINI_THEME, css=ILLINI_CSS) as demo:
     gr.HTML(HEADER_HTML)
-    with gr.Row():
+    with gr.Row(elem_id="ctrl-row"):
         mode_sw = gr.Radio(["Archive", "Real-time"], value="Archive",
-                           label="Mode", scale=1, min_width=150)
+                           label="Mode", scale=1, min_width=132,
+                           elem_id="mode-sw")
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
-                              allow_custom_value=True, scale=2)
+                              allow_custom_value=True, scale=2, min_width=150)
         field_dd = gr.Dropdown(list(FIELDS) + [QUAD], value="Reflectivity",
-                               label="Field", scale=2)
-        year_dd = gr.Dropdown(YEARS, value="2023", label="Year (UTC)", scale=1)
-        month_dd = gr.Dropdown(MONTHS, value="06", label="Month (UTC)", scale=1)
-        day_dd = gr.Dropdown(DAYS, value="29", label="Day (UTC)", scale=1)
-        hour_dd = gr.Dropdown(HOURS, value="18:00", label="Hour (UTC)", scale=1)
-        with gr.Column(scale=1, min_width=170):
+                               label="Field", scale=2, min_width=140)
+        year_dd = gr.Dropdown(YEARS, value="2023", label="Year (UTC)",
+                              scale=1, min_width=84)
+        month_dd = gr.Dropdown(MONTHS, value="06", label="Month (UTC)",
+                               scale=1, min_width=72)
+        day_dd = gr.Dropdown(DAYS, value="29", label="Day (UTC)",
+                             scale=1, min_width=72)
+        hour_dd = gr.Dropdown(HOURS, value="18:00", label="Hour (UTC)",
+                              scale=1, min_width=84)
+        with gr.Column(scale=1, min_width=150):
             go = gr.Button("Load hour", variant="primary")
             dl = gr.DownloadButton("Download raw (.zip)",
                                    interactive=False, size="sm")
@@ -2533,12 +2606,20 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     dl.click(prepare_archive,
              [site_tb, year_dd, month_dd, day_dd, hour_dd], dl)
 
-    def dealias_h(site, year, month, day, hour, progress=gr.Progress()):
-        info, page = browse(site, DEALIAS_NAME, year, month, day, hour,
-                            progress=progress)
+    def dealias_h(mode, site, field, year, month, day, hour,
+                  progress=gr.Progress()):
+        if mode == "Real-time":
+            info, page = browse(site, "Radial velocity", year, month, day,
+                                hour, progress=progress, realtime=True,
+                                want_deal=True)
+        else:
+            info, page = browse(site, DEALIAS_NAME, year, month, day, hour,
+                                progress=progress)
         return info, page
 
-    dax.click(dealias_h, [site_tb, year_dd, month_dd, day_dd, hour_dd],
+    dax.click(dealias_h,
+              [mode_sw, site_tb, field_dd, year_dd, month_dd, day_dd,
+               hour_dd],
               [status, map_html], show_progress_on=map_html)
     gr.Markdown(
         "Level 2 decoding by [xradar](https://github.com/swnesbitt/xradar) "
