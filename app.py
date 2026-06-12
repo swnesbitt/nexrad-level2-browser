@@ -400,17 +400,28 @@ def _reserved_mask(ds, fvar, data):
 
 
 def _dedup_doppler(cands, nyq_of, window_s=90):
-    """Cluster Doppler cuts closer than window_s and keep the cut with the
-    largest (estimated) Nyquist velocity in each cluster."""
+    """Collapse MPDA-style multi-PRF bursts: within a cluster of Doppler
+    cuts closer than window_s, keep only the highest-Nyquist cut — but only
+    when the Nyquists actually differ (>2 m/s spread). Equal-Nyquist cuts
+    are SAILS/MRLE revisits and are all kept."""
     out = []
     cluster = []
+
+    def flush():
+        if not cluster:
+            return
+        nv = [nyq_of(s) for s in cluster]
+        if max(nv) - min(nv) > 2.0:
+            out.append(cluster[int(np.argmax(nv))])
+        else:
+            out.extend(cluster)
+
     for s in cands:  # cands are in scan order
         if cluster and (s["t"] - cluster[0]["t"]).total_seconds() > window_s:
-            out.append(max(cluster, key=nyq_of))
+            flush()
             cluster = []
         cluster.append(s)
-    if cluster:
-        out.append(max(cluster, key=nyq_of))
+    flush()
     return out
 
 
@@ -1836,7 +1847,8 @@ def browse(site, field_name, year, month, day, hour, progress=None,
         except ValueError:
             return _msg("That calendar date doesn't exist — check day/month.")
         hr = int(str(hour)[:2])
-        if field_name not in FIELDS and field_name != QUAD:
+        if field_name not in FIELDS and field_name not in (QUAD,
+                                                           DEALIAS_NAME):
             field_name = "Reflectivity"
 
         # ---- per-hour bundle cache / in-flight dedup ---------------------
@@ -1846,7 +1858,7 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             if tpl is not None:
                 _PAGE_CACHE.move_to_end(key_h)
         if tpl is not None:
-            if field_name == DEALIAS_NAME and DEALIAS_NAME not in tpl:
+            if field_name == DEALIAS_NAME and _DEAL_MARKER not in tpl:
                 tpl = _dealias_compute(site, date, hr, _p)
             return "", _mode_page(tpl, field_name, view)
         with _CACHE_LOCK:
@@ -1860,7 +1872,7 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             with _CACHE_LOCK:
                 tpl = _PAGE_CACHE.get(key_h)
             if tpl is not None:
-                if field_name == DEALIAS_NAME and DEALIAS_NAME not in tpl:
+                if field_name == DEALIAS_NAME and _DEAL_MARKER not in tpl:
                     tpl = _dealias_compute(site, date, hr, _p)
                 return "", _mode_page(tpl, field_name, view)
             # fall through and compute ourselves if the other run failed
@@ -1869,7 +1881,7 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             err, tpl = _browse_compute(site, field_name, date, hr, _p)
             if err is not None:
                 return err
-            if field_name == DEALIAS_NAME and DEALIAS_NAME not in tpl:
+            if field_name == DEALIAS_NAME and _DEAL_MARKER not in tpl:
                 tpl = _dealias_compute(site, date, hr, _p)
             return "", _mode_page(tpl, field_name, view)
         finally:
@@ -1881,6 +1893,12 @@ def browse(site, field_name, year, month, day, hour, progress=None,
     except Exception:
         return _msg("Unexpected error:\n```\n"
                     + traceback.format_exc()[-1500:] + "\n```")
+
+
+# marker proving the dealiased field is inside a bundle template (must not
+# collide with the JS SHORT-name literal, hence the json "name" form)
+_DEAL_MARKER = html_mod.escape(json.dumps("name") + ": "
+                               + json.dumps(DEALIAS_NAME))
 
 
 def _hour_key(site, date, hr):
