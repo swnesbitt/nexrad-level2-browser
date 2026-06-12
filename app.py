@@ -1851,9 +1851,13 @@ if (INIT_DEAL && DEAL && DEAL.frames.length){
 
 // ------------------------------------------------------------- real-time
 if (RT){
-  // auto-refresh the trailing hour every 5 minutes via the parent page;
-  // keep the dealias state across refreshes by picking the right trigger
-  setTimeout(()=>{
+  // auto-refresh the trailing hour via the parent page; setInterval (not a
+  // one-shot timeout) so the chain survives refreshes whose response is
+  // byte-identical to the current page (cache hits skip the iframe swap,
+  // which would orphan a one-shot timer). A swapped-in bundle replaces the
+  // iframe wholesale, killing this interval with it. Keep the dealias
+  // state across refreshes by picking the right trigger.
+  setInterval(()=>{
     try {
       const id = (ckDeal && ckDeal.checked) ? 'dax-trigger' : 'rt-refresh';
       const h = parent.document.getElementById(id);
