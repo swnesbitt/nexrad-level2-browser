@@ -975,9 +975,9 @@ QUAD_PAGE = """<!DOCTYPE html>
 </div>
 <div id="exmenu"><b>Export view</b>
  <button data-k="still4k">Still &middot; 4K (3840&times;2160)</button>
- <button data-k="stillig">Still &middot; Instagram (1080&times;1080)</button>
+ <button data-k="stillig">Still &middot; Instagram reel (1080&times;1920)</button>
  <button data-k="loop4k">Loop &middot; 4K movie</button>
- <button data-k="loopig">Loop &middot; Instagram movie</button>
+ <button data-k="loopig">Loop &middot; Instagram reel movie</button>
 </div>
 <div id="bar">
  <div id="row1">
@@ -1599,8 +1599,8 @@ document.getElementById('export').addEventListener('click', ()=>{
 });
 EXMENU.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{
   EXMENU.style.display = 'none';
-  const cfg = {still4k:['still',3840,2160], stillig:['still',1080,1080],
-               loop4k:['loop',3840,2160],  loopig:['loop',1080,1080]}[b.dataset.k];
+  const cfg = {still4k:['still',3840,2160], stillig:['still',1080,1920],
+               loop4k:['loop',3840,2160],  loopig:['loop',1080,1920]}[b.dataset.k];
   exportMedia(cfg[0], cfg[1], cfg[2])
     .catch(e=>exToast('Export failed: '+e.message));
 }));
