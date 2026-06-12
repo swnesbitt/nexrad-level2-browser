@@ -2542,7 +2542,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                theme=ILLINI_THEME, css=ILLINI_CSS) as demo:
     gr.HTML(HEADER_HTML)
     with gr.Row(elem_id="ctrl-row"):
-        mode_sw = gr.Radio(["Archive", "Real-time"], value="Archive",
+        mode_sw = gr.Radio(["Archive", "Live"], value="Archive",
                            label="Mode", scale=1, min_width=132,
                            elem_id="mode-sw")
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
@@ -2571,7 +2571,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     map_html = gr.HTML()
     def browse_h(mode, site, field, year, month, day, hour,
                  progress=gr.Progress()):
-        rt = (mode == "Real-time")
+        rt = (mode == "Live")
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress, realtime=rt)
         return info, page, gr.DownloadButton(
@@ -2583,7 +2583,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
 
     def set_mode(mode, site, field, year, month, day, hour,
                  progress=gr.Progress()):
-        rt = (mode == "Real-time")
+        rt = (mode == "Live")
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress, realtime=rt)
         dd = [gr.Dropdown(interactive=not rt) for _ in range(4)]
@@ -2608,7 +2608,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
 
     def dealias_h(mode, site, field, year, month, day, hour,
                   progress=gr.Progress()):
-        if mode == "Real-time":
+        if mode == "Live":
             info, page = browse(site, "Radial velocity", year, month, day,
                                 hour, progress=progress, realtime=True,
                                 want_deal=True)
@@ -2666,13 +2666,13 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                 gr.Dropdown(value=day, interactive=arch),
                 gr.Dropdown(value=hour, interactive=arch),
                 ("site" in q or "year" in q), view, deal,
-                "Real-time" if rt else "Archive")
+                "Live" if rt else "Archive")
 
     def maybe_browse(mode, view, deal, site, field, year, month, day,
                      hour, progress=gr.Progress()):
         """Slow: auto-load on every visit — the default case on a plain
         visit, the shared view (incl. map center/zoom) when params exist."""
-        rt = (mode == "Real-time")
+        rt = (mode == "Live")
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress, view=view, want_deal=deal,
                             realtime=rt)
