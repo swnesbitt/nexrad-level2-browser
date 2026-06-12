@@ -163,6 +163,206 @@ os.makedirs(VOL_CACHE_DIR, exist_ok=True)
 VOL_CACHE_BYTES = 2 << 30  # 2 GiB
 
 
+# ---- live Level 2 chunk feed (Phase 1) --------------------------------------
+# Same objects the NewNEXRADLevel2ObjectFilterable SNS topic announces, read
+# anonymously: keys are SITE/VOL#/YYYYMMDD-HHMMSS-NNN-{S|I|E}.
+CHUNK_BUCKET = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com"
+CHUNK_DIR = os.path.join(VOL_CACHE_DIR, "chunks")
+os.makedirs(CHUNK_DIR, exist_ok=True)
+_CHUNK_STATE = {}          # site -> {vol:int -> meta dict}
+_CHUNK_LOCK = threading.Lock()
+_S3NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+
+
+def _s3_page(prefix, delimiter=None):
+    url = (f"{CHUNK_BUCKET}/?list-type=2&max-keys=1000"
+           f"&prefix={urllib.request.quote(prefix)}")
+    if delimiter:
+        url += f"&delimiter={delimiter}"
+    root = ET.fromstring(_http_get(url, timeout=30))
+    keys = [k.text for k in root.findall(".//s3:Contents/s3:Key", _S3NS)]
+    pres = [p.text for p in
+            root.findall(".//s3:CommonPrefixes/s3:Prefix", _S3NS)]
+    return keys, pres
+
+
+_CHUNK_RE = re.compile(r"(\d{8})-(\d{6})-(\d{3})-([SIE])$")
+
+
+def _chunk_list_vol(site, vol):
+    """List one volume dir -> meta(start, keys ordered, complete)."""
+    keys, _ = _s3_page(f"{site}/{vol}/")
+    parsed = []
+    for k in keys:
+        m = _CHUNK_RE.search(k)
+        if m:
+            parsed.append((int(m.group(3)), m.group(4), k))
+    if not parsed:
+        return None
+    parsed.sort()
+    m0 = _CHUNK_RE.search(parsed[0][2])
+    start = dt.datetime.strptime(m0.group(1) + m0.group(2), "%Y%m%d%H%M%S")
+    return dict(vol=vol, start=start,
+                keys=[p[2] for p in parsed],
+                complete=any(p[1] == "E" for p in parsed))
+
+
+def _chunk_recent_vols(site, window_min=65):
+    """Volumes whose scan started in the trailing window, oldest->newest.
+    One dir listing + probes of only the newest (and still-open) volumes."""
+    _, pres = _s3_page(f"{site}/", delimiter="/")
+    nums = sorted(int(p.split("/")[1]) for p in pres if
+                  p.split("/")[1].isdigit())
+    if not nums:
+        return []
+    # handle 0-999 rotation: if the set spans the wrap, low numbers are new
+    eff = ([n + 1000 if (max(nums) - min(nums) > 800 and n < 500) else n
+            for n in nums])
+    order = [n for _, n in sorted(zip(eff, nums), reverse=True)]
+    now = dt.datetime.utcnow()
+    state = _CHUNK_STATE.setdefault(site, {})
+    out = []
+    for vol in order[:18]:
+        meta = state.get(vol)
+        if meta is None or not meta["complete"]:
+            meta = _chunk_list_vol(site, vol)
+            if meta is None:
+                continue
+            with _CHUNK_LOCK:
+                state[vol] = meta
+        age_min = (now - meta["start"]).total_seconds() / 60.0
+        if age_min <= window_min:
+            out.append(meta)
+        elif age_min > window_min + 20:
+            break          # everything older is out of window too
+    with _CHUNK_LOCK:       # drop state for vols far outside the window
+        for vol in [v for v, m in state.items()
+                    if (now - m["start"]).total_seconds() > 5400]:
+            state.pop(vol, None)
+    return sorted(out, key=lambda m: m["start"])
+
+
+def _sync_chunks(site, meta):
+    """Download missing chunks for one volume; returns ordered local paths."""
+    vdir = os.path.join(CHUNK_DIR, site, str(meta["vol"]))
+    os.makedirs(vdir, exist_ok=True)
+    paths = []
+    todo = []
+    for k in meta["keys"]:
+        p = os.path.join(vdir, os.path.basename(k))
+        paths.append(p)
+        if not os.path.exists(p):
+            todo.append((k, p))
+    def _dl(job):
+        k, p = job
+        try:
+            data = _http_get(f"{CHUNK_BUCKET}/{urllib.request.quote(k)}",
+                             timeout=60)
+            tmp = p + ".part"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, p)
+        except Exception:
+            pass
+    if todo:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(_dl, todo))
+    return [p for p in paths if os.path.exists(p)]
+
+
+def fetch_live_chunks(site, window_min=65, progress=None):
+    """Phase-1 API: trailing-window volumes as ordered local chunk paths.
+    Returns [dict(vol, start, complete, paths)] oldest->newest."""
+    vols = _chunk_recent_vols(site, window_min)
+    out = []
+    for i, meta in enumerate(vols):
+        if progress:
+            progress(0.05 + 0.9 * (i + 1) / max(1, len(vols)),
+                     f"Syncing live chunks {i + 1}/{len(vols)} "
+                     f"(vol {meta['vol']})…")
+        paths = _sync_chunks(site, meta)
+        if paths:
+            out.append(dict(vol=meta["vol"], start=meta["start"],
+                            complete=meta["complete"], paths=paths))
+    return out
+
+
+def _prune_chunk_cache(max_age_s=7200):
+    try:
+        now = time_mod.time()
+        for site_d in os.listdir(CHUNK_DIR):
+            sdir = os.path.join(CHUNK_DIR, site_d)
+            for vol_d in os.listdir(sdir):
+                vdir = os.path.join(sdir, vol_d)
+                if now - os.path.getmtime(vdir) > max_age_s:
+                    shutil.rmtree(vdir, ignore_errors=True)
+    except Exception:
+        pass
+
+
+CHUNK_SITES = {"KILX"}        # sites on the low-latency chunk feed
+_CHUNK_FRAMES = {}            # (site, vol) -> dict(n, complete, frames)
+_CHUNK_DEAL = {}              # (site, vol) -> dealiased frames (complete vols)
+
+
+def _concat_chunks(paths, out_path):
+    """S+I+...+E chunks concatenated form a valid archive volume file."""
+    if not os.path.exists(out_path):
+        tmp = out_path + ".part"
+        with open(tmp, "wb") as w:
+            for p in paths:
+                with open(p, "rb") as r:
+                    shutil.copyfileobj(r, w)
+        os.replace(tmp, out_path)
+    return out_path
+
+
+def dealias_volume_file(path, vol_label):
+    """Py-ART region-based dealiasing of one local archive-format file."""
+    frames = []
+    try:
+        radar = pyart.io.read_nexrad_archive(path)
+    except Exception:
+        return frames
+    fixed = radar.fixed_angle["data"]
+
+    def _has(sweep, f):
+        if f not in radar.fields:
+            return False
+        return not np.all(np.ma.getmaskarray(radar.get_field(sweep, f)))
+
+    cands = [s for s in range(radar.nsweeps)
+             if fixed[s] < ELEV_MAX and _has(s, "velocity")]
+    if not cands:
+        return frames
+    try:
+        nyq = radar.instrument_parameters["nyquist_velocity"]["data"]
+        meta = []
+        for s in cands:
+            i0, i1 = radar.get_start_end(s)
+            meta.append(dict(s=s, t=sweep_datetime(radar, s),
+                             nyq=float(np.median(nyq[i0:i1 + 1]))))
+        cands = [m["s"] for m in _dedup_doppler(meta, lambda m: m["nyq"])]
+    except Exception:
+        pass
+    try:
+        sub = radar.extract_sweeps(cands)
+        corr = pyart.correct.dealias_region_based(
+            sub, vel_field="velocity", keep_original=False)
+        sub.fields["velocity"]["data"] = corr["data"]
+        polar_frame._vol = vol_label
+        _vcp = radar.metadata.get("vcp_pattern")
+        polar_frame._vcp = f"VCP-{_vcp}" if _vcp else ""
+        for s in range(sub.nsweeps):
+            fr = polar_frame(sub, s, DEALIAS_CFG)
+            if fr is not None:
+                frames.append(fr)
+    except Exception:
+        pass
+    del radar
+    return frames
+
+
 # ---- live warnings (real-time mode) ----------------------------------------
 WARN_SRC = ("https://mesonet.agron.iastate.edu/data/gis/shape/4326/us/"
             "current_ww.zip")
@@ -494,12 +694,23 @@ def _process_xradar(path, key, cfgs):
     """Read once with xradar (swnesbitt fork); render every requested field.
     Returns ({field_name: [frames]}, site_ll)."""
     dtree = xd.io.open_nexradlevel2_datatree(_gunzip(path))
+    return _tree_to_frames(dtree, os.path.basename(key), cfgs)
+
+
+def process_chunks(paths, vol_label, cfgs):
+    """Decode a live chunk list (S/I/E pieces of one volume) — the fork
+    assembles partial volumes; incomplete trailing sweeps are dropped."""
+    dtree = xd.io.open_nexradlevel2_datatree(list(paths),
+                                             incomplete_sweep="drop")
+    return _tree_to_frames(dtree, vol_label, cfgs)
+
+
+def _tree_to_frames(dtree, vol, cfgs):
     root = dtree.ds
     site_ll = (float(root["latitude"].values), float(root["longitude"].values))
-    vol = os.path.basename(key)
     vcp = str(root.attrs.get("scan_name", "") or "")
     dyn = str(root.attrs.get("dynamic_scan_type", "") or "")
-    if dyn and dyn.lower() not in ("none", "false", ""):
+    if dyn and dyn.lower() not in ("none", "false", "", "standard"):
         vcp = f"{vcp} ({dyn})" if vcp else dyn
 
     sweeps = []
@@ -1648,7 +1859,7 @@ if (RT){
       const h = parent.document.getElementById(id);
       (h.querySelector('button') || h).click();
     } catch (err) {}
-  }, 5 * 60 * 1000);
+  }, __RTSEC__ * 1000);
   // poll current TOR/SVR warnings every minute; redraw on change
   let warnTag = null, warnLayers = [];
   async function pollWarnings(){
@@ -2061,7 +2272,8 @@ def _export_logo_b64():
 EXPORT_LOGO_B64 = _export_logo_b64()
 
 
-def build_bundle_page(by_field, site, slat, slon, share_base=""):
+def build_bundle_page(by_field, site, slat, slon, share_base="",
+                      rt_refresh_s=300):
     """One page carrying ALL fields' polar textures; the requested view
     (single field or 2×2) is substituted into __MODE__ at serve time, so
     every field/4-panel switch after the first load is instant."""
@@ -2078,6 +2290,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             .replace("__WARNURL__", WARN_URL)
             .replace("__CITIESURL__", CITIES_URL)
             .replace("__LOGOB64__", EXPORT_LOGO_B64)
+            .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
             f'style="width:100%;height:calc(100vh - 205px);'
@@ -2148,8 +2361,9 @@ def _realtime_compute(site, field_name, _p, view, want_deal=False):
     """Decode the trailing hour. Short-lived cache + in-flight dedup keep
     reloads and concurrent viewers from re-decoding live data. Dealiasing
     is supported: the cached raw decode is upgraded in place."""
+    ttl = 45 if site in CHUNK_SITES else _RT_TTL
     c = _RT_CACHE.get(site)
-    fresh = c and time_mod.time() - c["ts"] < _RT_TTL
+    fresh = c and time_mod.time() - c["ts"] < ttl
     if fresh and (not want_deal or c["has_deal"]):
         return "", _mode_page(c["tpl"], field_name, view,
                               deal=want_deal, rt=True)
@@ -2177,7 +2391,102 @@ def _realtime_compute(site, field_name, _p, view, want_deal=False):
                 ev.set()
 
 
+def _realtime_chunks_inner(site, field_name, _p, view, want_deal=False):
+    """Live mode on the Level 2 chunk feed: per-volume incremental decode —
+    only the in-progress volume (and newly completed ones) cost CPU."""
+    _p(0.02, f"Polling the live chunk feed for {site}…")
+    vols = fetch_live_chunks(
+        site, progress=lambda f, d: _p(0.02 + 0.28 * f, d))
+    if not vols:
+        raise RuntimeError("no live chunks")
+    by_field = {fn: [] for fn in FIELDS}
+    site_ll = None
+    todo = []
+    for v in vols:
+        ck = (site, v["vol"])
+        cached = _CHUNK_FRAMES.get(ck)
+        if (cached and cached["n"] == len(v["paths"])
+                and cached["complete"] == v["complete"]):
+            continue
+        todo.append(v)
+    done = 0
+    for i in range(0, len(todo), 2):
+        grp = todo[i:i + 2]
+        with _DECODE_SEM:
+            with ProcessPoolExecutor(max_workers=N_PROC) as px:
+                futs = {px.submit(
+                    process_chunks, v["paths"],
+                    "live vol %d%s" % (v["vol"],
+                                       "" if v["complete"] else
+                                       " (updating)"),
+                    FIELDS): v for v in grp}
+                for fut in as_completed(futs):
+                    v = futs[fut]
+                    done += 1
+                    _p(0.32 + 0.40 * done / max(1, len(todo)),
+                       f"Decoding live volume {v['vol']} "
+                       f"({done}/{len(todo)})…")
+                    try:
+                        frames, ll = fut.result()
+                    except Exception:
+                        continue
+                    _CHUNK_FRAMES[(site, v["vol"])] = dict(
+                        n=len(v["paths"]), complete=v["complete"],
+                        frames=frames, site_ll=ll)
+    for v in vols:
+        cached = _CHUNK_FRAMES.get((site, v["vol"]))
+        if not cached:
+            continue
+        site_ll = site_ll or cached.get("site_ll")
+        for fn, fr in cached["frames"].items():
+            by_field[fn].extend(fr)
+    if want_deal:
+        comp = [v for v in vols if v["complete"]]
+        todo_d = [v for v in comp if (site, v["vol"]) not in _CHUNK_DEAL]
+        dn = 0
+        for i in range(0, len(todo_d), 2):
+            grp = todo_d[i:i + 2]
+            with _DECODE_SEM:
+                with ProcessPoolExecutor(max_workers=N_PROC) as px:
+                    futs = {px.submit(
+                        dealias_volume_file,
+                        _concat_chunks(v["paths"], os.path.join(
+                            CHUNK_DIR, site, str(v["vol"]), "volume.bin")),
+                        "live vol %d" % v["vol"]): v for v in grp}
+                    for fut in as_completed(futs):
+                        v = futs[fut]
+                        dn += 1
+                        _p(0.74 + 0.18 * dn / max(1, len(todo_d)),
+                           f"Dealiasing live volume {v['vol']} "
+                           f"({dn}/{len(todo_d)})…")
+                        try:
+                            _CHUNK_DEAL[(site, v["vol"])] = fut.result()
+                        except Exception:
+                            _CHUNK_DEAL[(site, v["vol"])] = []
+        dframes = []
+        for v in comp:
+            dframes.extend(_CHUNK_DEAL.get((site, v["vol"]), []))
+        dframes.sort(key=lambda f: f["time"])
+        by_field[DEALIAS_NAME] = dframes[:MAX_FRAMES]
+    for fn in by_field:
+        by_field[fn].sort(key=lambda f: f["time"])
+        by_field[fn] = by_field[fn][:MAX_FRAMES]
+    # bound the per-volume caches
+    for cache, cap in ((_CHUNK_FRAMES, 60), (_CHUNK_DEAL, 40)):
+        while len(cache) > cap:
+            cache.pop(next(iter(cache)))
+    _prune_chunk_cache()
+    return _rt_finish(site, field_name, _p, view, want_deal,
+                      by_field, site_ll)
+
+
 def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
+    if site in CHUNK_SITES:
+        try:
+            return _realtime_chunks_inner(site, field_name, _p, view,
+                                          want_deal)
+        except Exception:
+            pass   # fall back to the archive-bucket live path below
     _p(0.02, f"Listing the last 60 minutes for {site}…")
     bucket, keys, now = _rt_keys(site)
     if not keys:
@@ -2215,6 +2524,11 @@ def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
                         dframes.extend(fut.result())
         dframes.sort(key=lambda f: f["time"])
         by_field[DEALIAS_NAME] = dframes[:MAX_FRAMES]
+    return _rt_finish(site, field_name, _p, view, want_deal,
+                      by_field, site_ll)
+
+
+def _rt_finish(site, field_name, _p, view, want_deal, by_field, site_ll):
     if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
         site_ll = None
     if site_ll is None:
@@ -2227,19 +2541,10 @@ def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
             pass
     if site_ll is None or not any(by_field.values()):
         return _msg(f"Could not decode any live data from {site}.")
-    if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
-        site_ll = None
-    if site_ll is None:
-        try:
-            from pyart.io.nexrad_common import NEXRAD_LOCATIONS
-            loc = NEXRAD_LOCATIONS.get(site)
-            if loc:
-                site_ll = (loc["lat"], loc["lon"])
-        except Exception:
-            return _msg(f"Could not locate {site}.")
     _p(0.96, "Packing live bundle…")
+    rtsec = 120 if site in CHUNK_SITES else 300
     tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
-                            f"?site={site}&rt=1")
+                            f"?site={site}&rt=1", rt_refresh_s=rtsec)
     _RT_CACHE[site] = dict(ts=time_mod.time(), tpl=tpl, by_field=by_field,
                            site_ll=site_ll,
                            has_deal=DEALIAS_NAME in by_field)
