@@ -2252,10 +2252,12 @@ EXMENU.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{
     .catch(e=>exToast('Export failed: '+e.message));
 }));
 
-// stagger texture preloads
+// stagger texture preloads (newest-first in live mode)
 panels.forEach((p,pi)=>p.fd.frames.forEach((_,i)=>
-  setTimeout(()=>p.texFor(i,()=>{}), 80*i+20*pi)));
-show(0);
+  setTimeout(()=>p.texFor(i,()=>{}),
+             80*(RT ? p.fd.frames.length-1-i : i)+20*pi)));
+// live view opens on the newest frame; archive starts at the top of the hour
+show(RT ? nmax-1 : 0);
 </script></body></html>"""
 
 
