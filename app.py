@@ -14,6 +14,8 @@ import base64
 import bz2
 import collections
 import datetime as dt
+import hashlib
+import time as time_mod
 import gzip
 import html as html_mod
 import io
@@ -24,6 +26,11 @@ import shutil
 import tempfile
 import threading
 import zipfile
+
+try:
+    import shapefile as _pyshp   # pyshp, for live warning polygons
+except Exception:                # pragma: no cover
+    _pyshp = None
 import traceback
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -154,6 +161,53 @@ N_PROC = max(1, min(2, os.cpu_count() or 1))   # decode workers (CPU-bound)
 VOL_CACHE_DIR = os.path.join(tempfile.gettempdir(), "nexrad_vol_cache")
 os.makedirs(VOL_CACHE_DIR, exist_ok=True)
 VOL_CACHE_BYTES = 2 << 30  # 2 GiB
+
+
+# ---- live warnings (real-time mode) ----------------------------------------
+WARN_SRC = ("https://mesonet.agron.iastate.edu/data/gis/shape/4326/us/"
+            "current_ww.zip")
+WARN_JSON = os.path.join(VOL_CACHE_DIR, "warnings.json")
+WARN_URL = "/gradio_api/file=" + WARN_JSON
+
+
+def _fetch_warnings():
+    """Pull IEM current watches/warnings, keep storm-based TOR/SVR warnings,
+    write a GeoJSON FeatureCollection next to the volume cache."""
+    if _pyshp is None:
+        return
+    buf = _http_get(WARN_SRC, timeout=30)
+    z = zipfile.ZipFile(io.BytesIO(buf))
+    base = [n for n in z.namelist() if n.endswith(".shp")][0][:-4]
+    rdr = _pyshp.Reader(shp=io.BytesIO(z.read(base + ".shp")),
+                        dbf=io.BytesIO(z.read(base + ".dbf")),
+                        shx=io.BytesIO(z.read(base + ".shx")))
+    feats = []
+    for sr in rdr.iterShapeRecords():
+        d = sr.record.as_dict()
+        if (d.get("SIG") == "W" and d.get("PHENOM") in ("TO", "SV")
+                and d.get("GTYPE") == "P"):
+            feats.append(dict(
+                type="Feature",
+                properties=dict(ph=d.get("PHENOM"), wfo=d.get("WFO"),
+                                etn=d.get("ETN"), exp=d.get("EXPIRED")),
+                geometry=sr.shape.__geo_interface__))
+    out = dict(type="FeatureCollection",
+               etag=hashlib.md5(buf).hexdigest()[:12],
+               updated=dt.datetime.utcnow().isoformat() + "Z",
+               features=feats)
+    tmp = WARN_JSON + ".part"
+    with open(tmp, "w") as f:
+        json.dump(out, f)
+    os.replace(tmp, WARN_JSON)
+
+
+def _warn_poller():
+    while True:
+        try:
+            _fetch_warnings()
+        except Exception:
+            pass
+        time_mod.sleep(60)
 
 
 def _prune_vol_cache():
@@ -1130,6 +1184,8 @@ const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
 const INIT_VIEW = __VIEW__;   // [lat, lon, zoom] from a share link, or null
 const INIT_DEAL = __DEAL__;   // start with dealiased velocity shown
+const RT = __RT__;            // real-time (trailing hour) mode
+const WARN_URL = "__WARNURL__";
 const DEALF = "Radial velocity (dealiased)";
 const DEAL = DATA.find(d => d.name === DEALF) || null;
 const PANEL_DATA = DATA.filter(d => d.name !== DEALF);
@@ -1222,6 +1278,10 @@ function makePanel(fd, first){
   // map (zoom control on all; CSS shows it only on the first visible panel)
   const map = L.map(mdiv, {center:SITE, zoom:7, zoomControl:true,
                            attributionControl:first});
+  // warnings pane sits above everything else
+  map.createPane('warnpane');
+  map.getPane('warnpane').style.zIndex = 660;
+  map.getPane('warnpane').style.pointerEvents = 'none';
   // radar canvas pane sits between basemap tiles and all vector panes
   map.createPane('radarpane');
   map.getPane('radarpane').style.zIndex = 250;
@@ -1509,6 +1569,41 @@ function applyDeal(on){
 ckDeal.addEventListener('change', e=>applyDeal(e.target.checked));
 if (INIT_DEAL && DEAL && DEAL.frames.length){
   ckDeal.checked = true; applyDeal(true);
+}
+
+// ------------------------------------------------------------- real-time
+if (RT){
+  // dealias reprocess is archive-only (data still arriving)
+  if (!DEAL) ckDeal.parentElement.style.display = 'none';
+  // auto-refresh the trailing hour every 5 minutes via the parent page
+  setTimeout(()=>{
+    try {
+      const h = parent.document.getElementById('rt-refresh');
+      (h.querySelector('button') || h).click();
+    } catch (err) {}
+  }, 5 * 60 * 1000);
+  // poll current TOR/SVR warnings every minute; redraw on change
+  let warnTag = null, warnLayers = [];
+  async function pollWarnings(){
+    try {
+      const r = await fetch(WARN_URL + '?t=' + Date.now(),
+                            {cache: 'no-store'});
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.etag === warnTag) return;
+      warnTag = j.etag;
+      warnLayers.forEach(l=>l.remove());
+      warnLayers = panels.map(p=>{
+        const lyr = L.geoJSON(j, {pane: 'warnpane', style: f=>({
+          color: f.properties.ph === 'TO' ? '#FF2A2A' : '#FFE12A',
+          weight: 2.5, opacity: 1, fill: false})});
+        lyr.addTo(p.map);
+        return lyr;
+      });
+    } catch (err) {}
+  }
+  pollWarnings();
+  setInterval(pollWarnings, 60 * 1000);
 }
 
 // ---------------------------------------------------------------- export
@@ -1852,6 +1947,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             .replace("__SLAT__", f"{slat:.5f}")
             .replace("__SLON__", f"{slon:.5f}")
             .replace("__SITE__", site)
+            .replace("__WARNURL__", WARN_URL)
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
             f'style="width:100%;height:calc(100vh - 245px);'
@@ -1859,7 +1955,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
 
-def _mode_page(tpl, field_name, view=None, deal=False):
+def _mode_page(tpl, field_name, view=None, deal=False, rt=False):
     """Substitute the initial view mode, optional [lat, lon, zoom] and the
     dealias flag into a cached bundle template. The template is already
     HTML-escaped (srcdoc), so escape the JSON too."""
@@ -1872,7 +1968,8 @@ def _mode_page(tpl, field_name, view=None, deal=False):
     return (tpl
             .replace("__MODE__", html_mod.escape(json.dumps(mode)))
             .replace("__VIEW__", html_mod.escape(json.dumps(view)))
-            .replace("__DEAL__", "true" if deal else "false"))
+            .replace("__DEAL__", "true" if deal else "false")
+            .replace("__RT__", "true" if rt else "false"))
 
 
 # ----------------------------------------------------------------------------- gradio callback
@@ -1889,8 +1986,82 @@ _INFLIGHT = {}
 _CACHE_LOCK = threading.Lock()
 
 
+def _rt_keys(site):
+    """Volumes whose start time lies in the trailing 60 minutes."""
+    now = dt.datetime.utcnow()
+    bucket, keys = None, []
+    for hdt in (now - dt.timedelta(hours=1), now):
+        try:
+            b, k = list_hour_keys(site, hdt.date(), hdt.hour)
+        except Exception:
+            b, k = None, []
+        if k:
+            bucket = bucket or b
+            keys += k
+    cutoff = now - dt.timedelta(minutes=62)
+    sel = []
+    for k in keys:
+        m = re.search(r"(\d{8})_(\d{6})", k)
+        if m:
+            t = dt.datetime.strptime(m.group(1) + m.group(2),
+                                     "%Y%m%d%H%M%S")
+            if t >= cutoff:
+                sel.append(k)
+    return bucket, sorted(set(sel)), now
+
+
+def _realtime_compute(site, field_name, _p, view):
+    """Decode the trailing hour (no page cache — data keeps arriving)."""
+    _p(0.02, f"Listing the last 60 minutes for {site}…")
+    bucket, keys, now = _rt_keys(site)
+    if not keys:
+        return _msg(f"No Level 2 volumes from {site} in the last hour — "
+                    f"the radar may be down or data is still in transit.")
+    by_field = {fn: [] for fn in FIELDS}
+    site_ll = None
+    n = len(keys)
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [ex.submit(_safe_download, bucket, k, VOL_CACHE_DIR)
+                for k in keys]
+        for i, _ in enumerate(as_completed(futs)):
+            _p(0.04 + 0.20 * (i + 1) / n,
+               f"Fetching live volumes… {i + 1}/{n}")
+    with ProcessPoolExecutor(max_workers=N_PROC) as px:
+        pfuts = [px.submit(process_volume, bucket, k, FIELDS,
+                           VOL_CACHE_DIR) for k in keys]
+        done = 0
+        for fut in as_completed(pfuts):
+            done += 1
+            _p(0.26 + 0.66 * done / n,
+               f"Decoding live volumes {done}/{n} on {N_PROC} cores…")
+            volframes, ll = fut.result()
+            for fn, fr in volframes.items():
+                by_field[fn].extend(fr)
+            site_ll = site_ll or ll
+    _prune_vol_cache()
+    for fn in by_field:
+        by_field[fn].sort(key=lambda f: f["time"])
+        by_field[fn] = by_field[fn][:MAX_FRAMES]
+    if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
+        site_ll = None
+    if site_ll is None:
+        try:
+            from pyart.io.nexrad_common import NEXRAD_LOCATIONS
+            loc = NEXRAD_LOCATIONS.get(site)
+            if loc:
+                site_ll = (loc["lat"], loc["lon"])
+        except Exception:
+            pass
+    if site_ll is None or not any(by_field.values()):
+        return _msg(f"Could not decode any live data from {site}.")
+    _p(0.96, "Packing live bundle…")
+    tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
+                            f"?site={site}&rt=1")
+    return "", _mode_page(tpl, field_name, view, rt=True)
+
+
 def browse(site, field_name, year, month, day, hour, progress=None,
-           view=None, want_deal=False):
+           view=None, want_deal=False, realtime=False):
     def _p(frac, desc):
         if progress is not None:
             try:
@@ -1903,6 +2074,8 @@ def browse(site, field_name, year, month, day, hour, progress=None,
         if not m:
             return _msg("Pick a NEXRAD site (e.g. KTLX, KILX, PHWA).")
         site = m.group(1).upper()
+        if realtime:
+            return _realtime_compute(site, field_name, _p, view)
         try:
             date = dt.date(int(year), int(month), int(day))
         except ValueError:
@@ -2172,7 +2345,7 @@ ILLINI_CSS = """
 .gradio-container .form { gap: 4px !important; }
 .gradio-container .gap, .gradio-container .gradio-row { gap: 6px !important; }
 footer { display: none !important; }
-#dax-trigger { display: none !important; }
+#dax-trigger, #rt-refresh { display: none !important; }
 @media (max-width: 700px) {
   .gradio-container { padding: 8px 10px 4px !important; }
   .gradio-container h1 { font-size: 15px !important; }
@@ -2258,10 +2431,14 @@ addEventListener('DOMContentLoaded', function () {{
 </script>
 """
 
+gr.set_static_paths(paths=[VOL_CACHE_DIR])   # serves warnings.json
+
 with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                theme=ILLINI_THEME, css=ILLINI_CSS) as demo:
     gr.HTML(HEADER_HTML)
     with gr.Row():
+        mode_sw = gr.Radio(["Archive", "Real-time"], value="Archive",
+                           label="Mode", scale=1, min_width=150)
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
                               allow_custom_value=True, scale=2)
         field_dd = gr.Dropdown(list(FIELDS) + [QUAD], value="Reflectivity",
@@ -2278,16 +2455,44 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             # via parent.document when the hour hasn't been dealiased yet
             dax = gr.Button("Dealias velocity", elem_id="dax-trigger",
                             size="sm")
+            # hidden: the live page clicks this every 5 minutes
+            rtr = gr.Button("Refresh live", elem_id="rt-refresh", size="sm")
     status = gr.Markdown()
     map_html = gr.HTML()
-    def browse_h(site, field, year, month, day, hour,
+    def browse_h(mode, site, field, year, month, day, hour,
                  progress=gr.Progress()):
+        rt = (mode == "Real-time")
         info, page = browse(site, field, year, month, day, hour,
-                            progress=progress)
-        return info, page, gr.DownloadButton(interactive=bool(page))
+                            progress=progress, realtime=rt)
+        return info, page, gr.DownloadButton(
+            interactive=bool(page) and not rt)
 
-    go.click(browse_h, [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd],
+    go.click(browse_h,
+             [mode_sw, site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd],
              [status, map_html, dl], show_progress_on=map_html)
+
+    def set_mode(mode, site, field, year, month, day, hour,
+                 progress=gr.Progress()):
+        rt = (mode == "Real-time")
+        info, page = browse(site, field, year, month, day, hour,
+                            progress=progress, realtime=rt)
+        dd = [gr.Dropdown(interactive=not rt) for _ in range(4)]
+        return (*dd, info, page,
+                gr.DownloadButton(interactive=bool(page) and not rt))
+
+    mode_sw.change(set_mode,
+                   [mode_sw, site_tb, field_dd, year_dd, month_dd, day_dd,
+                    hour_dd],
+                   [year_dd, month_dd, day_dd, hour_dd, status, map_html, dl],
+                   show_progress_on=map_html)
+
+    def rt_refresh(site, field, progress=gr.Progress()):
+        info, page = browse(site, field, "", "", "", "",
+                            progress=progress, realtime=True)
+        return info, page
+
+    rtr.click(rt_refresh, [site_tb, field_dd], [status, map_html],
+              show_progress_on=map_html)
     dl.click(prepare_archive,
              [site_tb, year_dd, month_dd, day_dd, hour_dd], dl)
 
@@ -2316,6 +2521,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         """Fast: restore dropdown values (and map view) from URL params."""
         q = dict(request.query_params) if request else {}
         deal = q.get("dealias") == "1"
+        rt = q.get("rt") == "1"
         view = None
         try:
             if "lat" in q and "lon" in q and "zoom" in q:
@@ -2335,30 +2541,41 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         month = month if month in MONTHS else "06"
         day = day if day in DAYS else "29"
         hour = hour if hour in HOURS else "18:00"
-        return (site, field, year, month, day, hour,
-                ("site" in q or "year" in q), view, deal)
+        arch = not rt
+        return (site, field,
+                gr.Dropdown(value=year, interactive=arch),
+                gr.Dropdown(value=month, interactive=arch),
+                gr.Dropdown(value=day, interactive=arch),
+                gr.Dropdown(value=hour, interactive=arch),
+                ("site" in q or "year" in q), view, deal,
+                "Real-time" if rt else "Archive")
 
-    def maybe_browse(is_shared, view, deal, site, field, year, month, day,
+    def maybe_browse(mode, view, deal, site, field, year, month, day,
                      hour, progress=gr.Progress()):
         """Slow: auto-load on every visit — the default case on a plain
         visit, the shared view (incl. map center/zoom) when params exist."""
+        rt = (mode == "Real-time")
         info, page = browse(site, field, year, month, day, hour,
-                            progress=progress, view=view, want_deal=deal)
-        return info, page, gr.DownloadButton(interactive=bool(page))
+                            progress=progress, view=view, want_deal=deal,
+                            realtime=rt)
+        return info, page, gr.DownloadButton(
+            interactive=bool(page) and not rt)
 
     demo.load(
         init_values, None,
         [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd, shared,
-         view_st, deal_st],
+         view_st, deal_st, mode_sw],
     ).then(
         maybe_browse,
-        [shared, view_st, deal_st, site_tb, field_dd, year_dd, month_dd,
+        [mode_sw, view_st, deal_st, site_tb, field_dd, year_dd, month_dd,
          day_dd, hour_dd],
         [status, map_html, dl], show_progress_on=map_html,
     )
 
 # pre-render the default case at startup so first visitors get it instantly
 threading.Thread(target=lambda: browse(*DEFAULT_VIEW), daemon=True).start()
+# keep live warnings fresh for real-time mode
+threading.Thread(target=_warn_poller, daemon=True).start()
 
 if __name__ == "__main__":
     # ssr_mode=False -> Python serves the OG-patched index.html, so social
