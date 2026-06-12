@@ -1116,6 +1116,7 @@ QUAD_PAGE = """<!DOCTYPE html>
    <input id="slider" type="range" min="0" max="0" value="0" step="1"/>
    <label class="ck"><input type="checkbox" id="ck-counties" checked/><span>Counties</span></label>
    <label class="ck"><input type="checkbox" id="ck-interstates" checked/><span>Highways</span></label>
+   <label class="ck"><input type="checkbox" id="ck-dealias"/><span>Dealias V</span></label>
    <span style="opacity:.7">opacity</span>
    <input id="op" type="range" min="10" max="100" value="100"/>
  </div>
@@ -1128,9 +1129,15 @@ const SITE_ID = "__SITE__";
 const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
 const INIT_VIEW = __VIEW__;   // [lat, lon, zoom] from a share link, or null
+const INIT_DEAL = __DEAL__;   // start with dealiased velocity shown
+const DEALF = "Radial velocity (dealiased)";
+const DEAL = DATA.find(d => d.name === DEALF) || null;
+const PANEL_DATA = DATA.filter(d => d.name !== DEALF);
+const RAWV = PANEL_DATA.find(d => d.name === 'Radial velocity') || null;
 let mode = __MODE__;
-if (mode !== 'quad' && !DATA.some(fd => fd.name === mode))
-  mode = DATA[0].name;
+if (mode === DEALF) mode = 'Radial velocity';
+if (mode !== 'quad' && !PANEL_DATA.some(fd => fd.name === mode))
+  mode = PANEL_DATA[0].name;
 const VS = `attribute vec2 aPos; varying vec2 vUV;
 void main(){ vUV = aPos*0.5+0.5; gl_Position = vec4(aPos,0.,1.); }`;
 const FS = `
@@ -1176,6 +1183,7 @@ function makePanel(fd, first){
   const mdiv = document.createElement('div'); mdiv.className = 'pmap';
   wrap.appendChild(mdiv);
   const cv = document.createElement('canvas'); cv.className = 'gl';
+  const st = {fd: fd};   // swappable dataset (raw <-> dealiased velocity)
   const chip = document.createElement('div'); chip.className = 'chip';
   chip.textContent = fd.name; wrap.appendChild(chip);
   if (!fd.frames.length) {
@@ -1185,27 +1193,32 @@ function makePanel(fd, first){
       ? 'Pre-polarimetric upgrade data' : 'No data for this hour';
     wrap.appendChild(nd);
   }
-  // mini colorbar
-  const cb = fd.cbar;
+  // mini colorbar (repaintable)
   const cwrap = document.createElement('div'); cwrap.className = 'pcbar';
   const cl = document.createElement('div'); cl.className = 'pcl';
-  cl.textContent = cb.label;
   const ccv = document.createElement('canvas'); ccv.width = 10; ccv.height = 180;
   const ct = document.createElement('div'); ct.className = 'pct';
   cwrap.appendChild(cl); cwrap.appendChild(ccv); cwrap.appendChild(ct);
   wrap.appendChild(cwrap);
-  const cctx = ccv.getContext('2d');
-  const g = cctx.createLinearGradient(0, ccv.height, 0, 0);
-  cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
-  cctx.fillStyle = g; cctx.fillRect(0,0,ccv.width,ccv.height);
-  const t0 = Math.ceil(cb.vmin/cb.tick)*cb.tick;
-  for (let v=t0; v<=cb.vmax+1e-9; v+=cb.tick){
-    const val = +v.toFixed(6);
-    const d = document.createElement('div');
-    d.style.top = (100-(val-cb.vmin)/(cb.vmax-cb.vmin)*100)+'%';
-    d.textContent = ''+(cb.tick<1?val.toFixed(1):Math.round(val));
-    ct.appendChild(d);
+  function paintCbar(cb){
+    cl.textContent = cb.label;
+    const cctx = ccv.getContext('2d');
+    cctx.clearRect(0,0,ccv.width,ccv.height);
+    const g = cctx.createLinearGradient(0, ccv.height, 0, 0);
+    cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
+    cctx.fillStyle = g; cctx.fillRect(0,0,ccv.width,ccv.height);
+    ct.innerHTML = '';
+    const t0 = Math.ceil(cb.vmin/cb.tick)*cb.tick;
+    for (let v=t0; v<=cb.vmax+1e-9; v+=cb.tick){
+      const val = +v.toFixed(6);
+      const d = document.createElement('div');
+      d.style.top = (100-(val-cb.vmin)/(cb.vmax-cb.vmin)*100)+'%';
+      d.textContent = ''+(cb.tick<1?val.toFixed(1):Math.round(val));
+      ct.appendChild(d);
+    }
   }
+  const cb = fd.cbar;
+  paintCbar(cb);
   // map (zoom control on all; CSS shows it only on the first visible panel)
   const map = L.map(mdiv, {center:SITE, zoom:7, zoomControl:true,
                            attributionControl:first});
@@ -1255,7 +1268,7 @@ function makePanel(fd, first){
     gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.LINEAR));
   ['TEXTURE_WRAP_S','TEXTURE_WRAP_T'].forEach(p=>
     gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
-  const texCache = new Array(fd.frames.length).fill(null);
+  let texCache = {};
   function texFor(i, cbk){
     if (texCache[i]) { cbk(texCache[i]); return; }
     const img = new (window.Image)();
@@ -1270,14 +1283,14 @@ function makePanel(fd, first){
         gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
       texCache[i] = t; cbk(t);
     };
-    img.src = 'data:image/png;base64,' + fd.frames[i].img;
+    img.src = 'data:image/png;base64,' + st.fd.frames[i].img;
   }
   let raf = 0;
   function draw(){
     raf = 0;
-    const pi = Math.min(idx, fd.frames.length-1);
+    const pi = Math.min(idx, st.fd.frames.length-1);
     if (pi < 0) return;
-    const f = fd.frames[pi];
+    const f = st.fd.frames[pi];
     texFor(pi, (tex)=>{
       const sz = map.getSize(), dpr = window.devicePixelRatio||1;
       if (cv.width!==sz.x*dpr||cv.height!==sz.y*dpr){
@@ -1305,10 +1318,20 @@ function makePanel(fd, first){
   }
   function requestDraw(){ if(!raf) raf=requestAnimationFrame(draw); }
   map.on('move zoom zoomend moveend resize viewreset', requestDraw);
-  return {map, fd, ring, requestDraw, texFor, wrap};
+  function setData(nf){
+    st.fd = nf; texCache = {};
+    chip.textContent = nf.name;
+    paintCbar(nf.cbar);
+    const f = nf.frames[Math.min(Math.max(idx,0), nf.frames.length-1)];
+    if (f) ring.setRadius(f.maxr);
+    if (idx >= 0) refreshLabel(idx);
+    requestDraw();
+  }
+  return {map, get fd(){ return st.fd; }, name: fd.name, ring,
+          requestDraw, texFor, wrap, setData};
 }
 
-DATA.forEach((fd,i)=>panels.push(makePanel(fd, i===0)));
+PANEL_DATA.forEach((fd,i)=>panels.push(makePanel(fd, i===0)));
 
 // view sync
 panels.forEach(p=>{
@@ -1333,8 +1356,8 @@ function mkBtn(txt, m){
   b.onclick = ()=>setMode(m);
   modesEl.appendChild(b);
 }
-DATA.forEach(fd=>mkBtn(SHORT[fd.name]||fd.name, fd.name));
-if (DATA.length > 1) mkBtn('2\\u00d72', 'quad');
+PANEL_DATA.forEach(fd=>mkBtn(SHORT[fd.name]||fd.name, fd.name));
+if (PANEL_DATA.length > 1) mkBtn('2\\u00d72', 'quad');
 function setMode(m){
   mode = m;
   const grid = document.getElementById('grid');
@@ -1373,7 +1396,7 @@ setTimeout(function(){
 }, 90);
 
 // controls
-const nmax = Math.max.apply(null, DATA.map(fd=>fd.frames.length));
+const nmax = Math.max.apply(null, PANEL_DATA.map(fd=>fd.frames.length));
 const slider = document.getElementById('slider');
 slider.max = nmax-1;
 const label = document.getElementById('label'),
@@ -1411,9 +1434,11 @@ document.addEventListener('keydown', e=>{
 document.getElementById('share').addEventListener('click', ()=>{
   const vis = panels.find(p=>p.wrap.style.display !== 'none') || panels[0];
   const c = vis.map.getCenter(), z = vis.map.getZoom();
-  const url = SHARE_BASE + '&field=' +
+  let url = SHARE_BASE + '&field=' +
     encodeURIComponent(mode === 'quad' ? QUADF : mode) +
     '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + '&zoom=' + z;
+  const ckd = document.getElementById('ck-dealias');
+  if (ckd && ckd.checked) url += '&dealias=1';
   const done=()=>{const t=document.getElementById('toast');
     t.style.display='block'; setTimeout(()=>t.style.display='none',1600);};
   if(navigator.clipboard&&navigator.clipboard.writeText)
@@ -1455,6 +1480,36 @@ document.getElementById('ck-interstates').addEventListener('change', e=>{
 // both overlays start enabled
 document.getElementById('ck-counties').dispatchEvent(new Event('change'));
 document.getElementById('ck-interstates').dispatchEvent(new Event('change'));
+
+// dealias toggle: swap the velocity panel between raw and dealiased.
+// If this hour hasn't been dealiased server-side yet, click the hidden
+// Gradio trigger in the parent page to reprocess (page will update).
+const ckDeal = document.getElementById('ck-dealias');
+const vPanel = panels.find(p=>p.name === 'Radial velocity') || null;
+if (!vPanel || !RAWV || !RAWV.frames.length)
+  ckDeal.parentElement.style.display = 'none';
+function applyDeal(on){
+  if (!vPanel) return;
+  if (on){
+    if (DEAL && DEAL.frames.length){
+      vPanel.setData(DEAL);
+    } else {
+      exToast('Reprocessing hour with region-based dealiasing\\u2026', true);
+      try {
+        const host = parent.document.getElementById('dax-trigger');
+        (host.querySelector('button') || host).click();
+      } catch (err) {
+        exToast('Could not start dealiasing'); ckDeal.checked = false;
+      }
+    }
+  } else if (vPanel.fd.name === DEALF){
+    vPanel.setData(RAWV);
+  }
+}
+ckDeal.addEventListener('change', e=>applyDeal(e.target.checked));
+if (INIT_DEAL && DEAL && DEAL.frames.length){
+  ckDeal.checked = true; applyDeal(true);
+}
 
 // ---------------------------------------------------------------- export
 function activePanel(){
@@ -1804,14 +1859,20 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
 
-def _mode_page(tpl, field_name, view=None):
-    """Substitute the initial view mode and optional [lat, lon, zoom] into a
-    cached bundle template. The template is already HTML-escaped (srcdoc),
-    so escape the JSON too."""
-    mode = "quad" if field_name == QUAD else field_name
+def _mode_page(tpl, field_name, view=None, deal=False):
+    """Substitute the initial view mode, optional [lat, lon, zoom] and the
+    dealias flag into a cached bundle template. The template is already
+    HTML-escaped (srcdoc), so escape the JSON too."""
+    if field_name == QUAD:
+        mode = "quad"
+    elif field_name == DEALIAS_NAME:
+        mode, deal = "Radial velocity", True
+    else:
+        mode = field_name
     return (tpl
             .replace("__MODE__", html_mod.escape(json.dumps(mode)))
-            .replace("__VIEW__", html_mod.escape(json.dumps(view))))
+            .replace("__VIEW__", html_mod.escape(json.dumps(view)))
+            .replace("__DEAL__", "true" if deal else "false"))
 
 
 # ----------------------------------------------------------------------------- gradio callback
@@ -1829,7 +1890,7 @@ _CACHE_LOCK = threading.Lock()
 
 
 def browse(site, field_name, year, month, day, hour, progress=None,
-           view=None):
+           view=None, want_deal=False):
     def _p(frac, desc):
         if progress is not None:
             try:
@@ -1858,9 +1919,10 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             if tpl is not None:
                 _PAGE_CACHE.move_to_end(key_h)
         if tpl is not None:
-            if field_name == DEALIAS_NAME and _DEAL_MARKER not in tpl:
+            if ((field_name == DEALIAS_NAME or want_deal)
+                    and _DEAL_MARKER not in tpl):
                 tpl = _dealias_compute(site, date, hr, _p)
-            return "", _mode_page(tpl, field_name, view)
+            return "", _mode_page(tpl, field_name, view, want_deal)
         with _CACHE_LOCK:
             evt = _INFLIGHT.get(key_h)
             owner = evt is None
@@ -1881,9 +1943,10 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             err, tpl = _browse_compute(site, field_name, date, hr, _p)
             if err is not None:
                 return err
-            if field_name == DEALIAS_NAME and _DEAL_MARKER not in tpl:
+            if ((field_name == DEALIAS_NAME or want_deal)
+                    and _DEAL_MARKER not in tpl):
                 tpl = _dealias_compute(site, date, hr, _p)
-            return "", _mode_page(tpl, field_name, view)
+            return "", _mode_page(tpl, field_name, view, want_deal)
         finally:
             if owner:
                 with _CACHE_LOCK:
@@ -2109,6 +2172,7 @@ ILLINI_CSS = """
 .gradio-container .form { gap: 4px !important; }
 .gradio-container .gap, .gradio-container .gradio-row { gap: 6px !important; }
 footer { display: none !important; }
+#dax-trigger { display: none !important; }
 @media (max-width: 700px) {
   .gradio-container { padding: 8px 10px 4px !important; }
   .gradio-container h1 { font-size: 15px !important; }
@@ -2210,7 +2274,9 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             go = gr.Button("Load hour", variant="primary")
             dl = gr.DownloadButton("Download raw (.zip)",
                                    interactive=False, size="sm")
-            dax = gr.Button("Dealias velocity", interactive=False,
+            # hidden trigger: the in-map "Dealias V" checkbox clicks this
+            # via parent.document when the hour hasn't been dealiased yet
+            dax = gr.Button("Dealias velocity", elem_id="dax-trigger",
                             size="sm")
     status = gr.Markdown()
     map_html = gr.HTML()
@@ -2218,12 +2284,10 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                  progress=gr.Progress()):
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress)
-        ok = bool(page)
-        return (info, page, gr.DownloadButton(interactive=ok),
-                gr.Button(interactive=ok))
+        return info, page, gr.DownloadButton(interactive=bool(page))
 
     go.click(browse_h, [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd],
-             [status, map_html, dl, dax], show_progress_on=map_html)
+             [status, map_html, dl], show_progress_on=map_html)
     dl.click(prepare_archive,
              [site_tb, year_dd, month_dd, day_dd, hour_dd], dl)
 
@@ -2246,10 +2310,12 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
 
     shared = gr.State(False)
     view_st = gr.State(None)
+    deal_st = gr.State(False)
 
     def init_values(request: gr.Request):
         """Fast: restore dropdown values (and map view) from URL params."""
         q = dict(request.query_params) if request else {}
+        deal = q.get("dealias") == "1"
         view = None
         try:
             if "lat" in q and "lon" in q and "zoom" in q:
@@ -2270,27 +2336,25 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         day = day if day in DAYS else "29"
         hour = hour if hour in HOURS else "18:00"
         return (site, field, year, month, day, hour,
-                ("site" in q or "year" in q), view)
+                ("site" in q or "year" in q), view, deal)
 
-    def maybe_browse(is_shared, view, site, field, year, month, day, hour,
-                     progress=gr.Progress()):
+    def maybe_browse(is_shared, view, deal, site, field, year, month, day,
+                     hour, progress=gr.Progress()):
         """Slow: auto-load on every visit — the default case on a plain
         visit, the shared view (incl. map center/zoom) when params exist."""
         info, page = browse(site, field, year, month, day, hour,
-                            progress=progress, view=view)
-        ok = bool(page)
-        return (info, page, gr.DownloadButton(interactive=ok),
-                gr.Button(interactive=ok))
+                            progress=progress, view=view, want_deal=deal)
+        return info, page, gr.DownloadButton(interactive=bool(page))
 
     demo.load(
         init_values, None,
         [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd, shared,
-         view_st],
+         view_st, deal_st],
     ).then(
         maybe_browse,
-        [shared, view_st, site_tb, field_dd, year_dd, month_dd, day_dd,
-         hour_dd],
-        [status, map_html, dl, dax], show_progress_on=map_html,
+        [shared, view_st, deal_st, site_tb, field_dd, year_dd, month_dd,
+         day_dd, hour_dd],
+        [status, map_html, dl], show_progress_on=map_html,
     )
 
 # pre-render the default case at startup so first visitors get it instantly
