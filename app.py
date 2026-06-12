@@ -2444,9 +2444,11 @@ ILLINI_CSS = """
 .gradio-container input, .gradio-container .gradio-dropdown input {
   font-size: 13px !important; }
 .gradio-container .gradio-dropdown { min-height: 0 !important; }
-#mode-sw .wrap { flex-direction: row !important; gap: 3px !important;
+#mode-sw .wrap { flex-direction: row !important; gap: 4px !important;
   flex-wrap: nowrap !important; }
-#mode-sw label { padding: 3px 7px !important; font-size: 12px !important; }
+#mode-sw label { padding: 0 11px !important; font-size: 13px !important;
+  height: 38px !important; display: flex !important;
+  align-items: center !important; box-sizing: border-box !important; }
 #ctrl-row button { font-size: 13px !important; padding: 6px 8px !important; }
 @media (max-width: 900px) { #ctrl-row { flex-wrap: wrap !important; } }
 footer { display: none !important; }
