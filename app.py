@@ -1491,13 +1491,16 @@ function drawLogo(ctx, x, y, s){
 }
 
 function drawChrome(ctx, w, h, text, cb){
-  const bh = Math.max(44, Math.round(h*0.062));
-  const pad = Math.round(w*0.012);
+  // scale all chrome off the SHORT edge so portrait/landscape/4K all keep
+  // the same visual proportions (no oversized text on reels)
+  const s = Math.min(w, h);
+  const bh = Math.max(44, Math.round(s*0.066));
+  const pad = Math.round(s*0.018);
   ctx.fillStyle = '#13294B'; ctx.fillRect(0, h-bh, w, bh);
   ctx.fillStyle = '#FF5F05'; ctx.fillRect(0, h-bh, w, Math.max(2, bh*0.07));
-  const fs = Math.round(bh*0.32);
+  const fs = Math.round(bh*0.34);
   // colorbar zone reserved at right
-  const cw = Math.round(Math.min(w*0.2, 320)),
+  const cw = Math.round(Math.min(s*0.27, w*0.35)),
         chh = Math.max(8, Math.round(bh*0.26)),
         cx = w-cw-pad, cy = h-bh*0.72;
   const maxText = cx - 2*pad;
@@ -1566,7 +1569,8 @@ async function exportMedia(kind, w, h){
   const out = document.createElement('canvas');
   out.width = w; out.height = h;
   const octx = out.getContext('2d');
-  const logoS = Math.round(h*0.13), pad = Math.round(w*0.012);
+  const logoS = Math.round(Math.min(w,h)*0.15),
+        pad = Math.round(Math.min(w,h)*0.018);
 
   function shortLabel(f){
     const parts = f.label.split('\\u2022').map(s=>s.trim());
