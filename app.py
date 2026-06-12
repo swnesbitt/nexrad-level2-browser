@@ -2105,11 +2105,12 @@ function drawChrome(ctx, w, h, text, cb){
   ctx.fillStyle = '#13294B'; ctx.fillRect(0, h-bh, w, bh);
   ctx.fillStyle = '#FF5F05'; ctx.fillRect(0, h-bh, w, Math.max(2, bh*0.07));
   const fs = Math.round(bh*0.34);
-  // colorbar zone reserved at right
+  // colorbar zone reserved at right (skipped when cb is null - quad export
+  // draws one mini colorbar per quadrant instead)
   const cw = Math.round(Math.min(s*0.27, w*0.35)),
         chh = Math.max(8, Math.round(bh*0.26)),
         cx = w-cw-pad, cy = h-bh*0.72;
-  const maxText = cx - 2*pad;
+  const maxText = (cb ? cx : w) - 2*pad;
   ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
   ctx.fillStyle = '#fff';
   ctx.font = "600 "+fs+"px 'Source Sans 3', sans-serif";
@@ -2119,15 +2120,17 @@ function drawChrome(ctx, w, h, text, cb){
   ctx.fillText(ellipsize(ctx,
     'CliMAS \\u00b7 Illinois \\u00b7 NEXRAD Level 2 browser', maxText),
     pad, h-bh*0.22);
-  const g = ctx.createLinearGradient(cx,0,cx+cw,0);
-  cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
-  ctx.fillStyle = g; ctx.fillRect(cx, cy, cw, chh);
-  ctx.fillStyle = '#fff'; ctx.font = (fs*0.75)+"px 'Source Sans 3'";
-  ctx.textAlign = 'left';  ctx.fillText(cb.vmin, cx, cy+chh+fs*0.62);
-  ctx.textAlign = 'right'; ctx.fillText(cb.vmax, cx+cw, cy+chh+fs*0.62);
-  ctx.textAlign = 'center';
-  ctx.fillText(ellipsize(ctx, cb.label, cw+2*pad), cx+cw/2, cy-fs*0.55);
-  ctx.textAlign = 'left';
+  if (cb){
+    const g = ctx.createLinearGradient(cx,0,cx+cw,0);
+    cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
+    ctx.fillStyle = g; ctx.fillRect(cx, cy, cw, chh);
+    ctx.fillStyle = '#fff'; ctx.font = (fs*0.75)+"px 'Source Sans 3'";
+    ctx.textAlign = 'left';  ctx.fillText(cb.vmin, cx, cy+chh+fs*0.62);
+    ctx.textAlign = 'right'; ctx.fillText(cb.vmax, cx+cw, cy+chh+fs*0.62);
+    ctx.textAlign = 'center';
+    ctx.fillText(ellipsize(ctx, cb.label, cw+2*pad), cx+cw/2, cy-fs*0.55);
+    ctx.textAlign = 'left';
+  }
   return bh;
 }
 
@@ -2138,7 +2141,159 @@ function dlBlob(blob, name){
   setTimeout(()=>URL.revokeObjectURL(a.href), 30000);
 }
 
+async function exportQuad(kind, w, h){
+  // 2x2 composite: same geographic window in all four quadrants, each
+  // field with its own colormap, chip and mini colorbar; shared chrome.
+  if (!panels.some(p=>p.fd.frames.length)){ exToast('No data'); return; }
+  const s = Math.min(w, h);
+  const bh = Math.max(44, Math.round(s*0.066));   // matches drawChrome
+  const gap = Math.max(2, Math.round(s*0.004));
+  const qw = Math.floor((w-gap)/2), qh = Math.floor((h-bh-gap)/2);
+
+  const map = panels[0].map, sz = map.getSize();
+  const cm = PROJ.project(map.getCenter());
+  const e1 = PROJ.project(map.containerPointToLatLng([0, sz.y/2]));
+  const e2 = PROJ.project(map.containerPointToLatLng([sz.x, sz.y/2]));
+  const mercH = Math.abs(e2.x-e1.x) * (sz.y/sz.x);
+  const mercW = mercH * (qw/qh);
+  const win = {x0: cm.x-mercW/2, x1: cm.x+mercW/2,
+               y0: cm.y-mercH/2, y1: cm.y+mercH/2};
+
+  exToast('Rendering basemap\\u2026', true);
+  const base = document.createElement('canvas');
+  base.width = qw; base.height = qh;
+  await drawTiles(base.getContext('2d'),
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
+    win, qw, ['a','b','c','d']);
+  const refs = document.createElement('canvas');
+  refs.width = qw; refs.height = qh;
+  if (document.getElementById('ck-interstates').checked)
+    await drawTiles(refs.getContext('2d'),
+      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+      win, qw, null);
+  if (document.getElementById('ck-counties').checked)
+    drawCounties(refs.getContext('2d'), win, qw);
+  drawCitiesExport(refs.getContext('2d'), win, qw, qh);
+
+  const xgls = panels.map(p=>p.fd.frames.length
+    ? makeExportGL(qw, qh, p.fd.cbar) : null);
+  const work = document.createElement('canvas');
+  work.width = w; work.height = h;
+  const wctx = work.getContext('2d');
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const logoS = Math.round(s*0.13), pad = Math.round(s*0.018);
+
+  function quadChrome(ox, oy, p){
+    const qs = Math.min(qw, qh);
+    const fs = Math.max(11, Math.round(qs*0.034));
+    // field chip, top-left
+    wctx.save();
+    wctx.font = "600 "+fs+"px 'Source Sans 3', sans-serif";
+    wctx.textBaseline = 'middle';
+    const name = ellipsize(wctx, p.fd.name, qw*0.6);
+    const tw = wctx.measureText(name).width;
+    rrPath(wctx, ox+fs*0.7, oy+fs*0.7, tw+fs*1.4, fs*1.9, fs*0.5);
+    wctx.fillStyle = 'rgba(19,41,75,.88)'; wctx.fill();
+    wctx.fillStyle = '#fff'; wctx.textAlign = 'left';
+    wctx.fillText(name, ox+fs*1.4, oy+fs*0.7+fs*0.95);
+    // mini colorbar, bottom-right
+    const cb = p.fd.cbar;
+    const cw2 = Math.round(qw*0.30), chh = Math.max(6, Math.round(fs*0.55)),
+          cx = ox+qw-cw2-fs, cy = oy+qh-chh-fs*1.7;
+    const g = wctx.createLinearGradient(cx,0,cx+cw2,0);
+    cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
+    rrPath(wctx, cx-fs*0.5, cy-fs*0.45, cw2+fs, chh+fs*1.6, fs*0.35);
+    wctx.fillStyle = 'rgba(7,16,32,.55)'; wctx.fill();
+    wctx.fillStyle = g; wctx.fillRect(cx, cy, cw2, chh);
+    wctx.fillStyle = '#fff';
+    wctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
+    wctx.textAlign = 'left';  wctx.fillText(cb.vmin, cx, cy+chh+fs*0.55);
+    wctx.textAlign = 'right'; wctx.fillText(cb.vmax, cx+cw2, cy+chh+fs*0.55);
+    wctx.textAlign = 'left';
+    wctx.restore();
+  }
+  function shortLabel(f){
+    const parts = f.label.split('\\u2022').map(x=>x.trim());
+    let t = SITE_ID+' \\u00b7 '+parts[0]+(parts[1]?' \\u00b7 '+parts[1]:'');
+    if (parts[2] && parts[2].indexOf('VCP') === 0) t += ' \\u00b7 '+parts[2];
+    return t;
+  }
+  async function compose(i){
+    wctx.fillStyle = '#071020'; wctx.fillRect(0,0,w,h);
+    let lab = null;
+    for (let q=0; q<4; q++){
+      const p = panels[q];
+      const ox = (q%2)*(qw+gap), oy = Math.floor(q/2)*(qh+gap);
+      wctx.drawImage(base, ox, oy);
+      if (p.fd.frames.length){
+        const fi = Math.min(i, p.fd.frames.length-1);
+        const f = p.fd.frames[fi];
+        if (!lab) lab = f;
+        await xgls[q].draw(f, fi, win);
+        wctx.drawImage(xgls[q].cnv, ox, oy);
+      }
+      wctx.drawImage(refs, ox, oy);
+      if (p.fd.frames.length) quadChrome(ox, oy, p);
+      else {
+        const qs = Math.min(qw, qh), fs2 = Math.round(qs*0.04);
+        wctx.font = "600 "+fs2+"px 'Source Sans 3', sans-serif";
+        wctx.textAlign = 'center'; wctx.textBaseline = 'middle';
+        wctx.lineWidth = fs2*0.25; wctx.strokeStyle = 'rgba(7,16,32,.85)';
+        wctx.strokeText('Pre-polarimetric upgrade data', ox+qw/2, oy+qh/2);
+        wctx.fillStyle = '#C8C6C7';
+        wctx.fillText('Pre-polarimetric upgrade data', ox+qw/2, oy+qh/2);
+        wctx.textAlign = 'left';
+      }
+    }
+    drawChrome(wctx, w, h, lab ? shortLabel(lab) : SITE_ID, null);
+    drawLogo(wctx, pad, h-bh-logoS-pad, logoS);
+    octx.clearRect(0,0,w,h);
+    octx.drawImage(work,0,0);
+  }
+
+  const act = panels.find(p=>p.fd.frames.length);
+  const f0 = act.fd.frames[0];
+  const stamp = f0.label.slice(0,10).replace(/-/g,'') + '_' +
+                f0.label.slice(11,16).split(':').join('') + 'Z';
+  const base_name = SITE_ID+'_quad_'+stamp+'_'+w+'x'+h;
+
+  if (kind === 'still'){
+    await compose(Math.max(0, idx));
+    out.toBlob(b=>{ dlBlob(b, base_name+'.png');
+                    exToast('Image saved'); }, 'image/png');
+    return;
+  }
+  const mime = ['video/mp4;codecs=avc1.640028','video/mp4',
+                'video/webm;codecs=vp9','video/webm']
+    .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  if (!mime){ exToast('Video recording unsupported in this browser'); return; }
+  const ext = mime.indexOf('mp4')>=0 ? '.mp4' : '.webm';
+  exToast('Preparing radar textures\\u2026', true);
+  for (let q=0; q<4; q++)
+    if (xgls[q]) await xgls[q].preload(panels[q].fd.frames);
+  await compose(0);
+  const stream = out.captureStream(30);
+  const rec = new MediaRecorder(stream,
+    {mimeType:mime, videoBitsPerSecond: w>2000 ? 32e6 : 16e6});
+  const chunks = [];
+  rec.ondataavailable = e=>{ if (e.data.size) chunks.push(e.data); };
+  const done = new Promise(res=>{ rec.onstop = res; });
+  rec.start(250);
+  for (let i=0; i<nmax; i++){
+    exToast('Recording frame '+(i+1)+'/'+nmax+'\\u2026', true);
+    await compose(i);
+    await new Promise(r=>setTimeout(r, 450));
+  }
+  rec.stop();
+  await done;
+  dlBlob(new Blob(chunks, {type:mime}), base_name+ext);
+  exToast('Movie saved ('+ext.slice(1)+')');
+}
+
 async function exportMedia(kind, w, h){
+  if (mode === 'quad') return exportQuad(kind, w, h);
   const vis = activePanel(), fd = vis.fd;
   if (!fd.frames.length) { exToast('No data in this panel'); return; }
   const map = vis.map, sz = map.getSize();
