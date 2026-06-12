@@ -2010,15 +2010,44 @@ def _rt_keys(site):
     return bucket, sorted(set(sel)), now
 
 
+_RT_CACHE = {}        # site -> (timestamp, tpl)
+_RT_TTL = 150         # seconds — refresh cadence is 300 s
+
+
 def _realtime_compute(site, field_name, _p, view):
-    """Decode the trailing hour (no page cache — data keeps arriving)."""
+    """Decode the trailing hour. Short-lived cache + in-flight dedup keep
+    reloads and concurrent viewers from re-decoding live data."""
+    cached = _RT_CACHE.get(site)
+    if cached and time_mod.time() - cached[0] < _RT_TTL:
+        return "", _mode_page(cached[1], field_name, view, rt=True)
+    key_rt = ("RT", site)
+    with _CACHE_LOCK:
+        evt = _INFLIGHT.get(key_rt)
+        owner = evt is None
+        if owner:
+            _INFLIGHT[key_rt] = threading.Event()
+    if not owner:
+        _p(0.5, "Live hour already rendering — attaching…")
+        evt.wait(600)
+        cached = _RT_CACHE.get(site)
+        if cached:
+            return "", _mode_page(cached[1], field_name, view, rt=True)
+    try:
+        return _realtime_compute_inner(site, field_name, _p, view)
+    finally:
+        if owner:
+            with _CACHE_LOCK:
+                ev = _INFLIGHT.pop(key_rt, None)
+            if ev:
+                ev.set()
+
+
+def _realtime_compute_inner(site, field_name, _p, view):
     _p(0.02, f"Listing the last 60 minutes for {site}…")
     bucket, keys, now = _rt_keys(site)
     if not keys:
         return _msg(f"No Level 2 volumes from {site} in the last hour — "
                     f"the radar may be down or data is still in transit.")
-    by_field = {fn: [] for fn in FIELDS}
-    site_ll = None
     n = len(keys)
     with ThreadPoolExecutor(max_workers=6) as ex:
         futs = [ex.submit(_safe_download, bucket, k, VOL_CACHE_DIR)
@@ -2026,22 +2055,9 @@ def _realtime_compute(site, field_name, _p, view):
         for i, _ in enumerate(as_completed(futs)):
             _p(0.04 + 0.20 * (i + 1) / n,
                f"Fetching live volumes… {i + 1}/{n}")
-    with ProcessPoolExecutor(max_workers=N_PROC) as px:
-        pfuts = [px.submit(process_volume, bucket, k, FIELDS,
-                           VOL_CACHE_DIR) for k in keys]
-        done = 0
-        for fut in as_completed(pfuts):
-            done += 1
-            _p(0.26 + 0.66 * done / n,
-               f"Decoding live volumes {done}/{n} on {N_PROC} cores…")
-            volframes, ll = fut.result()
-            for fn, fr in volframes.items():
-                by_field[fn].extend(fr)
-            site_ll = site_ll or ll
+    by_field, site_ll = _decode_keys(bucket, keys, _p, 0.26, 0.66,
+                                     "Decoding live volumes")
     _prune_vol_cache()
-    for fn in by_field:
-        by_field[fn].sort(key=lambda f: f["time"])
-        by_field[fn] = by_field[fn][:MAX_FRAMES]
     if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
         site_ll = None
     if site_ll is None:
@@ -2057,6 +2073,9 @@ def _realtime_compute(site, field_name, _p, view):
     _p(0.96, "Packing live bundle…")
     tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
                             f"?site={site}&rt=1")
+    _RT_CACHE[site] = (time_mod.time(), tpl)
+    for k in [k for k in _RT_CACHE if k != site][8:]:
+        _RT_CACHE.pop(k, None)
     return "", _mode_page(tpl, field_name, view, rt=True)
 
 
@@ -2137,6 +2156,36 @@ _DEAL_MARKER = html_mod.escape(json.dumps("name") + ": "
                                + json.dumps(DEALIAS_NAME))
 
 
+# Only one decode batch may use the CPUs at a time, and work is chunked so
+# concurrent requests (boot pre-render vs. a live user) interleave fairly
+# instead of thrashing two process pools on two cores.
+_DECODE_SEM = threading.Semaphore(1)
+
+
+def _decode_keys(bucket, keys, _p, base, span, label):
+    """Decode volumes (all fields) in semaphore-guarded chunks of 2."""
+    by_field = {fn: [] for fn in FIELDS}
+    site_ll = None
+    n, done = len(keys), 0
+    for i in range(0, n, 2):
+        chunk = keys[i:i + 2]
+        with _DECODE_SEM:
+            with ProcessPoolExecutor(max_workers=N_PROC) as px:
+                futs = [px.submit(process_volume, bucket, k, FIELDS,
+                                  VOL_CACHE_DIR) for k in chunk]
+                for fut in as_completed(futs):
+                    done += 1
+                    _p(base + span * done / n, f"{label} {done}/{n}…")
+                    volframes, ll = fut.result()
+                    for fn, fr in volframes.items():
+                        by_field[fn].extend(fr)
+                    site_ll = site_ll or ll
+    for fn in by_field:
+        by_field[fn].sort(key=lambda f: f["time"])
+        by_field[fn] = by_field[fn][:MAX_FRAMES]
+    return by_field, site_ll
+
+
 def _hour_key(site, date, hr):
     return (site, f"{date.year}", f"{date.month:02d}",
             f"{date.day:02d}", f"{hr:02d}")
@@ -2162,8 +2211,6 @@ def _browse_compute(site, field_name, date, hr, _p):
                 f"(dual-pol fields require 2011+ for most sites)."
             ), None
 
-        by_field = {fn: [] for fn in FIELDS}
-        site_ll = None
         n = len(keys)
         with ThreadPoolExecutor(max_workers=6) as ex:
             futs = [ex.submit(_safe_download, bucket, k, VOL_CACHE_DIR)
@@ -2172,23 +2219,10 @@ def _browse_compute(site, field_name, date, hr, _p):
                 _p(0.04 + 0.20 * (i + 1) / n,
                    f"Downloading volumes from AWS… {i + 1}/{n} "
                    f"(cached volumes skip this)")
-        with ProcessPoolExecutor(max_workers=N_PROC) as px:
-            pfuts = [px.submit(process_volume, bucket, k, FIELDS,
-                               VOL_CACHE_DIR) for k in keys]
-            done = 0
-            for fut in as_completed(pfuts):
-                done += 1
-                _p(0.26 + 0.66 * done / n,
-                   f"Decoding volumes {done}/{n} on {N_PROC} cores — "
-                   f"all four fields, regridding to polar textures")
-                volframes, ll = fut.result()
-                for fn, fr in volframes.items():
-                    by_field[fn].extend(fr)
-                site_ll = site_ll or ll
+        by_field, site_ll = _decode_keys(
+            bucket, keys, _p, 0.26, 0.66,
+            "Decoding volumes (all four fields)")
         _prune_vol_cache()
-        for fn in by_field:
-            by_field[fn].sort(key=lambda f: f["time"])
-            by_field[fn] = by_field[fn][:MAX_FRAMES]
 
         # legacy (Message 1 era, pre-~2008) volumes carry no site coords and
         # decode as 0°N 0°E — fall back to the WSR-88D station table
@@ -2246,16 +2280,19 @@ def _dealias_compute(site, date, hr, _p):
     bucket, keys = list_hour_keys(site, date, hr)
     n = len(keys)
     dframes = []
-    with ProcessPoolExecutor(max_workers=N_PROC) as px:
-        pfuts = [px.submit(dealias_volume, bucket, k, VOL_CACHE_DIR)
-                 for k in keys]
-        done = 0
-        for fut in as_completed(pfuts):
-            done += 1
-            _p(0.05 + 0.85 * done / n,
-               f"Region-based dealiasing {done}/{n} volumes "
-               f"(Py-ART dealias_region_based)…")
-            dframes.extend(fut.result())
+    done = 0
+    for i in range(0, n, 2):
+        chunk = keys[i:i + 2]
+        with _DECODE_SEM:
+            with ProcessPoolExecutor(max_workers=N_PROC) as px:
+                pfuts = [px.submit(dealias_volume, bucket, k, VOL_CACHE_DIR)
+                         for k in chunk]
+                for fut in as_completed(pfuts):
+                    done += 1
+                    _p(0.05 + 0.85 * done / n,
+                       f"Region-based dealiasing {done}/{n} volumes "
+                       f"(Py-ART dealias_region_based)…")
+                    dframes.extend(fut.result())
     dframes.sort(key=lambda f: f["time"])
     dframes = dframes[:MAX_FRAMES]
     _p(0.95, "Rebuilding bundle with dealiased velocity…")
