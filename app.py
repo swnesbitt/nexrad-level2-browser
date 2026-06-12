@@ -2069,6 +2069,38 @@ function ellipsize(ctx, text, maxw){
   return text+'\\u2026';
 }
 
+function drawCbarTicks(ctx, cx, cy, cw, chh, cb, fs){
+  // interior tick marks + labels every cb.tick, thinned to the bar width
+  if (!cb.tick || cb.vmax <= cb.vmin) return;
+  const span = cb.vmax-cb.vmin;
+  const k0 = Math.ceil((cb.vmin+span*1e-6)/cb.tick),
+        k1 = Math.floor((cb.vmax-span*1e-6)/cb.tick);
+  const vals = [];
+  for (let k = k0; k <= k1; k++){
+    const v = k*cb.tick, x = (v-cb.vmin)/span;
+    if (x > 0.03 && x < 0.97) vals.push(v);
+  }
+  if (!vals.length) return;
+  const stride = Math.max(1, Math.ceil((vals.length*fs*2.4)/cw));
+  ctx.save();
+  ctx.font = "600 "+(fs*0.72)+"px 'Source Sans 3', sans-serif";
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < vals.length; i++){
+    const v = vals[i];
+    const px = cx + cw*(v-cb.vmin)/span;
+    ctx.strokeStyle = 'rgba(255,255,255,.9)';
+    ctx.lineWidth = Math.max(1, fs*0.07);
+    ctx.beginPath(); ctx.moveTo(px, cy); ctx.lineTo(px, cy+chh*0.5);
+    ctx.stroke();
+    if (i % stride) continue;
+    const x = (v-cb.vmin)/span;
+    if (x < 0.08 || x > 0.92) continue;   // keep clear of vmin/vmax labels
+    ctx.fillStyle = '#fff';
+    ctx.fillText(String(+v.toFixed(2)), px, cy+chh+fs*0.62);
+  }
+  ctx.restore();
+}
+
 const LOGO_IMG = new (window.Image)();
 LOGO_IMG.src = 'data:image/png;base64,__LOGOB64__';
 function rrPath(ctx, x, y, w, h, r){
@@ -2127,6 +2159,7 @@ function drawChrome(ctx, w, h, text, cb){
     ctx.fillStyle = '#fff'; ctx.font = (fs*0.75)+"px 'Source Sans 3'";
     ctx.textAlign = 'left';  ctx.fillText(cb.vmin, cx, cy+chh+fs*0.62);
     ctx.textAlign = 'right'; ctx.fillText(cb.vmax, cx+cw, cy+chh+fs*0.62);
+    drawCbarTicks(ctx, cx, cy, cw, chh, cb, fs);
     ctx.textAlign = 'center';
     ctx.fillText(ellipsize(ctx, cb.label, cw+2*pad), cx+cw/2, cy-fs*0.55);
     ctx.textAlign = 'left';
@@ -2211,6 +2244,7 @@ async function exportQuad(kind, w, h){
     wctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
     wctx.textAlign = 'left';  wctx.fillText(cb.vmin, cx, cy+chh+fs*0.55);
     wctx.textAlign = 'right'; wctx.fillText(cb.vmax, cx+cw2, cy+chh+fs*0.55);
+    drawCbarTicks(wctx, cx, cy, cw2, chh, cb, fs*0.9);
     wctx.textAlign = 'left';
     wctx.restore();
   }
