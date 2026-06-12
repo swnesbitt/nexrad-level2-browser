@@ -2543,7 +2543,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     gr.HTML(HEADER_HTML)
     with gr.Row(elem_id="ctrl-row"):
         mode_sw = gr.Radio(["Archive", "Live"], value="Archive",
-                           label="Mode", scale=1, min_width=132,
+                           label="Mode", scale=1, min_width=172,
                            elem_id="mode-sw")
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
                               allow_custom_value=True, scale=2, min_width=150)
