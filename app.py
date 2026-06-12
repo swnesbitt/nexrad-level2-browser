@@ -2994,6 +2994,11 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             rtr = gr.Button("Refresh live", elem_id="rt-refresh", size="sm")
     status = gr.Markdown()
     map_html = gr.HTML()
+
+    shared = gr.State(False)
+    view_st = gr.State(None)
+    deal_st = gr.State(False)   # live dealiasing on for this session
+
     def browse_h(mode, site, field, year, month, day, hour,
                  progress=gr.Progress()):
         rt = (mode == "Live")
@@ -3013,12 +3018,14 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                             progress=progress, realtime=rt)
         dd = [gr.Dropdown(interactive=not rt) for _ in range(4)]
         return (*dd, info, page,
-                gr.DownloadButton(interactive=bool(page) and not rt))
+                gr.DownloadButton(interactive=bool(page) and not rt),
+                False)   # reset live-dealias preference on mode change
 
     mode_sw.change(set_mode,
                    [mode_sw, site_tb, field_dd, year_dd, month_dd, day_dd,
                     hour_dd],
-                   [year_dd, month_dd, day_dd, hour_dd, status, map_html, dl],
+                   [year_dd, month_dd, day_dd, hour_dd, status, map_html, dl,
+                    deal_st],
                    show_progress_on=map_html)
 
     def rt_refresh(site, field, progress=gr.Progress()):
@@ -3040,12 +3047,28 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         else:
             info, page = browse(site, DEALIAS_NAME, year, month, day, hour,
                                 progress=progress)
-        return info, page
+        return info, page, (mode == "Live")
 
     dax.click(dealias_h,
               [mode_sw, site_tb, field_dd, year_dd, month_dd, day_dd,
                hour_dd],
-              [status, map_html], show_progress_on=map_html)
+              [status, map_html, deal_st], show_progress_on=map_html)
+
+    # server-side live refresh: a Timer tick every 2 minutes replaces the
+    # in-page hidden-button click (programmatic DOM clicks proved unreliable
+    # across browsers). Archive sessions skip at zero cost.
+    rt_timer = gr.Timer(120)
+
+    def rt_tick(mode, site, field, deal, progress=gr.Progress()):
+        if mode != "Live":
+            return gr.skip(), gr.skip()
+        info, page = browse(site, "Radial velocity" if deal else field,
+                            "", "", "", "", progress=progress,
+                            realtime=True, want_deal=deal)
+        return info, page
+
+    rt_timer.tick(rt_tick, [mode_sw, site_tb, field_dd, deal_st],
+                  [status, map_html], show_progress="hidden")
     gr.Markdown(
         "Level 2 decoding by [xradar](https://github.com/swnesbitt/xradar) "
         "(openradar; S. Nesbitt fork) "
@@ -3055,10 +3078,6 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
         "· [Source code on GitHub](https://github.com/swnesbitt/nexrad-level2-browser)."
     )
-
-    shared = gr.State(False)
-    view_st = gr.State(None)
-    deal_st = gr.State(False)
 
     def init_values(request: gr.Request):
         """Fast: restore dropdown values (and map view) from URL params."""
