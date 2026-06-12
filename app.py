@@ -169,6 +169,17 @@ WARN_SRC = ("https://mesonet.agron.iastate.edu/data/gis/shape/4326/us/"
 WARN_JSON = os.path.join(VOL_CACHE_DIR, "warnings.json")
 WARN_URL = "/gradio_api/file=" + WARN_JSON
 
+# city label database (GeoNames-derived, shipped with the repo) is served
+# from the static cache dir alongside warnings.json
+CITIES_SRC = os.path.join(os.path.dirname(__file__), "cities.json")
+CITIES_JSON = os.path.join(VOL_CACHE_DIR, "cities.json")
+try:
+    if os.path.exists(CITIES_SRC):
+        shutil.copyfile(CITIES_SRC, CITIES_JSON)
+except Exception:
+    pass
+CITIES_URL = "/gradio_api/file=" + CITIES_JSON
+
 
 def _fetch_warnings():
     """Pull IEM current watches/warnings, keep storm-based TOR/SVR warnings,
@@ -1186,6 +1197,7 @@ const INIT_VIEW = __VIEW__;   // [lat, lon, zoom] from a share link, or null
 const INIT_DEAL = __DEAL__;   // start with dealiased velocity shown
 const RT = __RT__;            // real-time (trailing hour) mode
 const WARN_URL = "__WARNURL__";
+const CITIES_URL = "__CITIESURL__";
 const DEALF = "Radial velocity (dealiased)";
 const DEAL = DATA.find(d => d.name === DEALF) || null;
 const PANEL_DATA = DATA.filter(d => d.name !== DEALF);
@@ -1278,6 +1290,50 @@ function makePanel(fd, first){
   // map (zoom control on all; CSS shows it only on the first visible panel)
   const map = L.map(mdiv, {center:SITE, zoom:7, zoomControl:true,
                            attributionControl:first});
+  // city labels pane (canvas) above overlays, below warnings
+  map.createPane('citypane');
+  map.getPane('citypane').style.zIndex = 655;
+  map.getPane('citypane').style.pointerEvents = 'none';
+  const cityCv = document.createElement('canvas');
+  map.getPane('citypane').appendChild(cityCv);
+  function cityDraw(){
+    if (!window.CITIES) return;
+    const sz = map.getSize(), dpr = window.devicePixelRatio || 1;
+    if (cityCv.width !== sz.x*dpr || cityCv.height !== sz.y*dpr){
+      cityCv.width = sz.x*dpr; cityCv.height = sz.y*dpr;
+      cityCv.style.width = sz.x+'px'; cityCv.style.height = sz.y+'px';
+    }
+    L.DomUtil.setPosition(cityCv, map.containerPointToLayerPoint([0,0]));
+    const g = cityCv.getContext('2d');
+    g.setTransform(dpr,0,0,dpr,0,0);
+    g.clearRect(0,0,sz.x,sz.y);
+    const z = map.getZoom(), b = map.getBounds();
+    const minPop = cityPopMin(z);
+    const placed = [];
+    let n = 0;
+    g.textBaseline = 'middle'; g.textAlign = 'left';
+    g.font = '600 12px Arial, Helvetica, sans-serif';
+    for (let i = 0; i < window.CITIES.length && n < 110; i++){
+      const c = window.CITIES[i];           // [name, lat, lon, pop]
+      if (c[3] < minPop) { if (minPop > 0) continue; }
+      if (c[1] < b.getSouth() || c[1] > b.getNorth() ||
+          c[2] < b.getWest()  || c[2] > b.getEast()) continue;
+      const pt = map.latLngToContainerPoint([c[1], c[2]]);
+      let ok = true;
+      for (let j = 0; j < placed.length; j++){
+        if (Math.abs(pt.x-placed[j][0]) < 92 &&
+            Math.abs(pt.y-placed[j][1]) < 18){ ok = false; break; }
+      }
+      if (!ok) continue;
+      placed.push([pt.x, pt.y]); n++;
+      g.fillStyle = '#FFFFFF';
+      g.beginPath(); g.arc(pt.x, pt.y, 2.4, 0, 2*Math.PI); g.fill();
+      g.lineWidth = 3; g.strokeStyle = 'rgba(7,16,32,.85)';
+      g.strokeText(c[0], pt.x+6, pt.y);
+      g.fillText(c[0], pt.x+6, pt.y);
+    }
+  }
+  map.on('move zoom zoomend moveend resize viewreset', cityDraw);
   // warnings pane sits above everything else
   map.createPane('warnpane');
   map.getPane('warnpane').style.zIndex = 660;
@@ -1291,7 +1347,7 @@ function makePanel(fd, first){
   map.createPane('refpane');
   map.getPane('refpane').style.zIndex = 650;
   map.getPane('refpane').style.pointerEvents = 'none';
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
     {attribution:'&copy; OSM &copy; CARTO', subdomains:'abcd', maxZoom:14})
     .addTo(map);
   L.circleMarker(SITE,{radius:4,color:'#fff',weight:2,fillColor:'#e33',
@@ -1388,10 +1444,25 @@ function makePanel(fd, first){
     requestDraw();
   }
   return {map, get fd(){ return st.fd; }, name: fd.name, ring,
-          requestDraw, texFor, wrap, setData};
+          requestDraw, texFor, wrap, setData, cityDraw};
 }
 
 PANEL_DATA.forEach((fd,i)=>panels.push(makePanel(fd, i===0)));
+
+function cityPopMin(z){
+  if (z >= 12) return 0;
+  if (z >= 11) return 2000;
+  if (z >= 10) return 6000;
+  if (z >= 9)  return 15000;
+  if (z >= 8)  return 40000;
+  if (z >= 7)  return 90000;
+  if (z >= 6)  return 250000;
+  return 600000;
+}
+fetch(CITIES_URL).then(r=>r.json()).then(arr=>{
+  window.CITIES = arr;
+  panels.forEach(p=>p.cityDraw());
+}).catch(()=>{});
 
 // view sync
 panels.forEach(p=>{
@@ -1650,6 +1721,40 @@ async function drawTiles(ctx, tpl, win, w, subs){
   await Promise.all(jobs);
 }
 
+function drawCitiesExport(ctx, win, w, h){
+  if (!window.CITIES) return;
+  const mpp = (win.x1-win.x0)/w;
+  const zEff = Math.round(Math.log2(MERC_FULL/(256*mpp)));
+  const minPop = cityPopMin(zEff);
+  const s = Math.min(w, h);
+  const fs = Math.max(12, Math.round(s*0.016));
+  ctx.save();
+  ctx.font = '600 '+fs+'px Arial, Helvetica, sans-serif';
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const placed = [];
+  let n = 0;
+  for (let i = 0; i < window.CITIES.length && n < 120; i++){
+    const c = window.CITIES[i];
+    if (c[3] < minPop && minPop > 0) continue;
+    const mx = mercX(c[2]), my = mercY(c[1]);
+    if (mx < win.x0 || mx > win.x1 || my < win.y0 || my > win.y1) continue;
+    const px = (mx-win.x0)/mpp, py = (win.y1-my)/mpp;
+    let ok = true;
+    for (let j = 0; j < placed.length; j++){
+      if (Math.abs(px-placed[j][0]) < fs*8 &&
+          Math.abs(py-placed[j][1]) < fs*1.6){ ok = false; break; }
+    }
+    if (!ok) continue;
+    placed.push([px, py]); n++;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath(); ctx.arc(px, py, fs*0.2, 0, 2*Math.PI); ctx.fill();
+    ctx.lineWidth = fs*0.25; ctx.strokeStyle = 'rgba(7,16,32,.85)';
+    ctx.strokeText(c[0], px+fs*0.5, py);
+    ctx.fillText(c[0], px+fs*0.5, py);
+  }
+  ctx.restore();
+}
+
 function drawCounties(ctx, win, w){
   if (!countyGJ) return;
   const mpp = (win.x1-win.x0)/w;
@@ -1751,18 +1856,25 @@ function ellipsize(ctx, text, maxw){
 
 const LOGO_IMG = new (window.Image)();
 LOGO_IMG.src = 'data:image/png;base64,__LOGOB64__';
+function rrPath(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
 function drawLogo(ctx, x, y, s){
-  // the actual CliMAS logo, circle-cropped
+  // the actual CliMAS logo in a rounded-rectangle badge
   if (!LOGO_IMG.complete || !LOGO_IMG.naturalWidth) return;
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(x+s/2, y+s/2, s/2, 0, 2*Math.PI);
+  rrPath(ctx, x, y, s, s, s*0.18);
   ctx.clip();
   ctx.drawImage(LOGO_IMG, x, y, s, s);
   ctx.restore();
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(x+s/2, y+s/2, s/2, 0, 2*Math.PI);
+  rrPath(ctx, x, y, s, s, s*0.18);
   ctx.lineWidth = Math.max(2, s*0.012);
   ctx.strokeStyle = 'rgba(255,255,255,.85)';
   ctx.stroke();
@@ -1827,7 +1939,7 @@ async function exportMedia(kind, w, h){
   const base = document.createElement('canvas');
   base.width = w; base.height = h;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
     win, w, ['a','b','c','d']);
 
   const refs = document.createElement('canvas');
@@ -1838,6 +1950,7 @@ async function exportMedia(kind, w, h){
       win, w, null);
   if (document.getElementById('ck-counties').checked)
     drawCounties(refs.getContext('2d'), win, w);
+  drawCitiesExport(refs.getContext('2d'), win, w, h);
 
   const xgl = makeExportGL(w, h, fd.cbar);
   // double buffer: compose on `work`, blit complete frames to `out` —
@@ -1963,6 +2076,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
             .replace("__SLON__", f"{slon:.5f}")
             .replace("__SITE__", site)
             .replace("__WARNURL__", WARN_URL)
+            .replace("__CITIESURL__", CITIES_URL)
             .replace("__LOGOB64__", EXPORT_LOGO_B64)
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
@@ -2467,11 +2581,11 @@ if os.path.exists(os.path.join(os.path.dirname(__file__), "logo.png")):
         open(os.path.join(os.path.dirname(__file__), "logo.png"), "rb").read()
     ).decode()
     LOGO_HTML = (f'<img src="data:image/png;base64,{_b64}" alt="CliMAS" '
-                 f'style="width:64px;height:64px;border-radius:50%;flex:none"/>')
+                 f'style="width:64px;height:64px;border-radius:14px;flex:none"/>')
 else:
     LOGO_HTML = """
 <svg viewBox="0 0 400 400" width="64" height="64"
-     style="border-radius:50%;flex:none" aria-label="CliMAS">
+     style="border-radius:14px;flex:none" aria-label="CliMAS">
   <circle cx="200" cy="200" r="200" fill="#13294B"/>
   <path d="M150 70 h100 v42 h-26 v76 h26 v42 h-100 v-42 h26 v-76 h-26 z"
         fill="#FF5F05" stroke="#fff" stroke-width="10"/>
