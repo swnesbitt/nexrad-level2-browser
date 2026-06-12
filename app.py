@@ -849,15 +849,18 @@ QUAD = "All fields (4-panel)"
 QUAD_PAGE = """<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&family=Source+Sans+3:wght@400;600;700&display=swap');
  :root{--io:#FF5F05;--ib:#13294B;--ib2:#1D3866;--ib3:#25457F;--sl:#C8C6C7}
  html,body{margin:0;height:100%;background:var(--ib)}
- #grid{position:absolute;inset:0 0 86px 0;display:grid;gap:4px;
-       grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+ :root{--barh:86px}
+ #grid{position:absolute;inset:0 0 var(--barh) 0;display:grid;gap:4px;
+       grid-template-columns:1fr;grid-template-rows:1fr;
        background:#0c1d38}
+ #grid.quad{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
  .panel{position:relative;overflow:hidden}
  .pmap{position:absolute;inset:0}
  /* radar canvas lives in a Leaflet pane (z 250): tiles(200) < radar(250)
@@ -877,12 +880,12 @@ QUAD_PAGE = """<!DOCTYPE html>
  .pct{position:relative;width:26px}
  .pct div{position:absolute;left:0;transform:translateY(-50%);
        font-variant-numeric:tabular-nums}
- #bar{position:absolute;left:0;right:0;bottom:0;height:86px;
+ #bar{position:absolute;left:0;right:0;bottom:0;height:var(--barh);
       background:var(--ib);border-top:4px solid var(--io);color:#fff;
       font:13px 'Source Sans 3',system-ui,sans-serif;display:flex;
       flex-direction:column;justify-content:center;gap:6px;
       padding:6px 14px;box-sizing:border-box}
- #row1{display:flex;align-items:center;gap:10px}
+ #row1{display:flex;align-items:center;gap:10px;flex-wrap:nowrap}
  #slider{flex:1;accent-color:var(--io)}
  #op{accent-color:var(--io);width:90px}
  #label{font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;
@@ -909,6 +912,39 @@ QUAD_PAGE = """<!DOCTYPE html>
      pointer-events:none;color:var(--sl);background:rgba(12,29,56,.45);
      font:600 13px 'Montserrat',sans-serif;letter-spacing:.05em;
      text-transform:uppercase}
+ #export{position:absolute;top:158px;left:10px;z-index:1100;width:34px;
+     height:34px;display:flex;align-items:center;justify-content:center;
+     cursor:pointer;background:var(--ib2);color:#fff;
+     border:1px solid var(--ib3);border-radius:4px;
+     box-shadow:0 1px 5px rgba(0,0,0,.4)}
+ #export:hover{background:var(--io)}
+ #exmenu{position:absolute;top:158px;left:52px;z-index:1100;display:none;
+     flex-direction:column;gap:6px;background:rgba(19,41,75,.95);
+     border:1px solid var(--ib3);border-top:4px solid var(--io);
+     border-radius:4px;padding:10px;color:#fff;
+     font:12px 'Source Sans 3',sans-serif}
+ #exmenu b{font-family:'Montserrat',sans-serif;font-size:10px;
+     letter-spacing:.06em;text-transform:uppercase;opacity:.85}
+ #exmenu button{text-align:left;font-family:'Source Sans 3',sans-serif;
+     font-weight:600;font-size:12px;padding:6px 10px}
+ @media (max-width:700px){
+   :root{--barh:132px}
+   #row1{flex-wrap:wrap;gap:8px;row-gap:6px}
+   #slider{flex:1 1 100%;order:10}
+   #modes button{padding:6px 10px;font-size:12px}
+   #play{padding:6px 14px}
+   .chip{font-size:9px;padding:2px 6px}
+   .pcbar{padding:4px 3px;gap:3px}
+   .pcbar canvas{height:120px;width:8px}
+   .panel.solo .pcbar canvas{height:150px}
+   .pct{width:22px}.pcl{font-size:8px}
+   #share,#export{width:42px;height:42px}
+   #share{top:104px}
+   #export{top:154px}
+   #exmenu{top:154px;left:60px}
+   #label{font-size:11px}
+   #bar{gap:4px;padding:6px 10px}
+ }
  .leaflet-top.leaflet-left{top:30px}   /* keep zoom clear of the field chip */
  .panel{display:none}
  .panel .leaflet-control-zoom{display:none}
@@ -930,6 +966,19 @@ QUAD_PAGE = """<!DOCTYPE html>
  </svg>
 </div>
 <div id="toast">Link copied</div>
+<div id="export" title="Export image / loop">
+ <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+   <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+   <circle cx="12" cy="13" r="4"/>
+ </svg>
+</div>
+<div id="exmenu"><b>Export view</b>
+ <button data-k="still4k">Still &middot; 4K (3840&times;2160)</button>
+ <button data-k="stillig">Still &middot; Instagram (1080&times;1080)</button>
+ <button data-k="loop4k">Loop &middot; 4K movie</button>
+ <button data-k="loopig">Loop &middot; Instagram movie</button>
+</div>
 <div id="bar">
  <div id="row1">
    <button id="play">&#9654;</button>
@@ -945,6 +994,7 @@ QUAD_PAGE = """<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 const SITE = [__SLAT__, __SLON__];
+const SITE_ID = "__SITE__";
 const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
 const INIT_VIEW = __VIEW__;   // [lat, lon, zoom] from a share link, or null
@@ -1166,8 +1216,7 @@ function setMode(m){
     p.wrap.classList.toggle('zc', zc);
     if (zc) zcDone = true;
   });
-  grid.style.gridTemplateColumns = m === 'quad' ? '1fr 1fr' : '1fr';
-  grid.style.gridTemplateRows    = m === 'quad' ? '1fr 1fr' : '1fr';
+  grid.classList.toggle('quad', m === 'quad');
   document.querySelectorAll('#modes button').forEach(b=>
     b.classList.toggle('act', b.dataset.m === m));
   setTimeout(()=>{
@@ -1245,7 +1294,7 @@ document.getElementById('share').addEventListener('click', ()=>{
 // overlays applied to all panels
 const COUNTY_URL =
   'https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json';
-let countyLayers = null, countyLoading = false;
+let countyLayers = null, countyLoading = false, countyGJ = null;
 const roadLayers = panels.map(p=>L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
   {attribution:'Esri', opacity:1.0, pane:'refpane'}));
@@ -1257,6 +1306,7 @@ document.getElementById('ck-counties').addEventListener('change', e=>{
     if (countyLoading) return;
     countyLoading = true; lbl.textContent='Counties…';
     fetch(COUNTY_URL).then(r=>r.json()).then(gj=>{
+      countyGJ = gj;
       countyLayers = panels.map(()=>L.geoJSON(gj,{pane:'refpane',style:
         {color:'#C8C6C7',weight:0.7,opacity:1.0,fill:false}}));
       if (document.getElementById('ck-counties').checked)
@@ -1274,6 +1324,286 @@ document.getElementById('ck-interstates').addEventListener('change', e=>{
 // both overlays start enabled
 document.getElementById('ck-counties').dispatchEvent(new Event('change'));
 document.getElementById('ck-interstates').dispatchEvent(new Event('change'));
+
+// ---------------------------------------------------------------- export
+function activePanel(){
+  return panels.find(p=>p.wrap.style.display!=='none') || panels[0];
+}
+function exToast(t, sticky){
+  const el = document.getElementById('toast');
+  el.textContent = t; el.style.display = 'block';
+  clearTimeout(exToast._t);
+  if (!sticky) exToast._t = setTimeout(()=>{
+    el.style.display='none'; el.textContent='Link copied';}, 2600);
+}
+function loadImg(src, cors){
+  return new Promise((res, rej)=>{
+    const im = new (window.Image)();
+    if (cors) im.crossOrigin = 'anonymous';
+    im.onload = ()=>res(im);
+    im.onerror = ()=>rej(new Error('image load failed'));
+    im.src = src;
+  });
+}
+const MERC_R = 6378137, MERC_FULL = 2*Math.PI*MERC_R;
+function mercX(lon){ return MERC_R*lon*Math.PI/180; }
+function mercY(lat){ return MERC_R*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360)); }
+
+async function drawTiles(ctx, tpl, win, w, subs){
+  const mpp = (win.x1-win.x0)/w;
+  let z = Math.round(Math.log2(MERC_FULL/(256*mpp)));
+  z = Math.max(2, Math.min(18, z));
+  const n = Math.pow(2, z), ts = MERC_FULL/n;
+  const tx0 = Math.floor((win.x0+MERC_FULL/2)/ts),
+        tx1 = Math.floor((win.x1+MERC_FULL/2)/ts),
+        ty0 = Math.floor((MERC_FULL/2-win.y1)/ts),
+        ty1 = Math.floor((MERC_FULL/2-win.y0)/ts);
+  const jobs = [];
+  for (let tx=tx0; tx<=tx1; tx++) for (let ty=ty0; ty<=ty1; ty++){
+    if (ty<0 || ty>=n) continue;
+    const xm = ((tx%n)+n)%n;
+    const url = tpl.replace('{z}',z).replace('{x}',xm).replace('{y}',ty)
+                   .replace('{s}', subs ? subs[(tx+ty)%subs.length] : '');
+    const px = (tx*ts-MERC_FULL/2-win.x0)/mpp;
+    const py = (win.y1-(MERC_FULL/2-ty*ts))/mpp;
+    jobs.push(loadImg(url, true)
+      .then(im=>ctx.drawImage(im, px, py, ts/mpp+0.6, ts/mpp+0.6))
+      .catch(()=>{}));
+  }
+  await Promise.all(jobs);
+}
+
+function drawCounties(ctx, win, w){
+  if (!countyGJ) return;
+  const mpp = (win.x1-win.x0)/w;
+  ctx.save();
+  ctx.strokeStyle = '#C8C6C7'; ctx.globalAlpha = 0.9;
+  ctx.lineWidth = Math.max(1, w/2200);
+  const drawRing = ring=>{
+    ctx.beginPath();
+    ring.forEach((pt,i)=>{
+      const x = (mercX(pt[0])-win.x0)/mpp, y = (win.y1-mercY(pt[1]))/mpp;
+      if (i) ctx.lineTo(x,y); else ctx.moveTo(x,y);
+    });
+    ctx.stroke();
+  };
+  countyGJ.features.forEach(f=>{
+    const g = f.geometry; if (!g) return;
+    if (g.type === 'Polygon') g.coordinates.forEach(drawRing);
+    else if (g.type === 'MultiPolygon')
+      g.coordinates.forEach(p=>p.forEach(drawRing));
+  });
+  ctx.restore();
+}
+
+function makeExportGL(w, h, cb){
+  const cnv = document.createElement('canvas');
+  cnv.width = w; cnv.height = h;
+  const gl = cnv.getContext('webgl', {premultipliedAlpha:false, alpha:true,
+                                      preserveDrawingBuffer:true});
+  function sh(t,src){ const s=gl.createShader(t); gl.shaderSource(s,src);
+    gl.compileShader(s); return s; }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER,VS));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER,FS));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER,
+    new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog,'aPos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+  const U = {};
+  ['uData','uCmap','uMercMin','uMercMax','uSite','uEl','uR0','uDr','uNgates',
+   'uNaz','uMaxR','uOpacity'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+  const px = new Uint8Array(cb.stops.length*4);
+  cb.stops.forEach((hex,i)=>{px[i*4]=parseInt(hex.slice(1,3),16);
+    px[i*4+1]=parseInt(hex.slice(3,5),16);
+    px[i*4+2]=parseInt(hex.slice(5,7),16); px[i*4+3]=255;});
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,cb.stops.length,1,0,gl.RGBA,
+                gl.UNSIGNED_BYTE,px);
+  ['TEXTURE_MIN_FILTER','TEXTURE_MAG_FILTER'].forEach(p=>
+    gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.LINEAR));
+  ['TEXTURE_WRAP_S','TEXTURE_WRAP_T'].forEach(p=>
+    gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
+  const cache = {};
+  async function draw(f, i, win){
+    if (!cache[i]){
+      const im = await loadImg('data:image/png;base64,'+f.img);
+      const t = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,t);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.LUMINANCE,gl.LUMINANCE,
+                    gl.UNSIGNED_BYTE,im);
+      ['TEXTURE_MIN_FILTER','TEXTURE_MAG_FILTER'].forEach(p=>
+        gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.NEAREST));
+      ['TEXTURE_WRAP_S','TEXTURE_WRAP_T'].forEach(p=>
+        gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
+      cache[i] = t;
+    }
+    gl.viewport(0,0,w,h);
+    gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,cache[i]);
+    gl.uniform1i(U.uData,0); gl.uniform1i(U.uCmap,1);
+    gl.uniform2f(U.uMercMin,win.x0,win.y0);
+    gl.uniform2f(U.uMercMax,win.x1,win.y1);
+    gl.uniform2f(U.uSite,SITE[1]*Math.PI/180,SITE[0]*Math.PI/180);
+    gl.uniform1f(U.uEl,f.el*Math.PI/180);
+    gl.uniform1f(U.uR0,f.r0); gl.uniform1f(U.uDr,f.dr);
+    gl.uniform1f(U.uNgates,f.ngates); gl.uniform1f(U.uNaz,f.naz);
+    gl.uniform1f(U.uMaxR,f.maxr); gl.uniform1f(U.uOpacity,1.0);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  }
+  return {cnv, draw};
+}
+
+function drawLogo(ctx, x, y, s){
+  // CliMAS Block-I roundel, drawn natively at any scale
+  ctx.save();
+  ctx.translate(x, y); ctx.scale(s/400, s/400);
+  ctx.beginPath(); ctx.arc(200,200,200,0,2*Math.PI);
+  ctx.fillStyle = '#13294B'; ctx.fill();
+  const blockI = new Path2D(
+    'M150 70 h100 v42 h-26 v76 h26 v42 h-100 v-42 h26 v-76 h-26 z');
+  ctx.lineWidth = 10; ctx.strokeStyle = '#fff';
+  ctx.fillStyle = '#FF5F05';
+  ctx.fill(blockI); ctx.stroke(blockI);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+  ctx.font = "600 28px 'Source Sans 3', sans-serif";
+  ['Climate,','Meteorology &','Atmospheric','Sciences'].forEach((t,i)=>
+    ctx.fillText(t, 200, 268+30*i));
+  ctx.restore();
+}
+
+function drawChrome(ctx, w, h, text, cb){
+  const bh = Math.max(44, Math.round(h*0.062));
+  ctx.fillStyle = '#13294B'; ctx.fillRect(0, h-bh, w, bh);
+  ctx.fillStyle = '#FF5F05'; ctx.fillRect(0, h-bh, w, Math.max(2, bh*0.07));
+  const fs = Math.round(bh*0.32);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline='middle';
+  ctx.font = "600 "+fs+"px 'Source Sans 3', sans-serif";
+  ctx.fillText(text, Math.round(w*0.012), h-bh*0.62);
+  ctx.fillStyle = '#C8C6C7';
+  ctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
+  ctx.fillText('CliMAS \\u00b7 Illinois \\u00b7 NEXRAD Level 2 browser',
+               Math.round(w*0.012), h-bh*0.22);
+  // horizontal colorbar at right
+  const cw = Math.round(w*0.2), chh = Math.max(8, Math.round(bh*0.26)),
+        cx = w-cw-Math.round(w*0.012), cy = h-bh*0.72;
+  const g = ctx.createLinearGradient(cx,0,cx+cw,0);
+  cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
+  ctx.fillStyle = g; ctx.fillRect(cx, cy, cw, chh);
+  ctx.fillStyle = '#fff'; ctx.font = (fs*0.75)+"px 'Source Sans 3'";
+  ctx.textAlign = 'left';  ctx.fillText(cb.vmin, cx, cy+chh+fs*0.62);
+  ctx.textAlign = 'right'; ctx.fillText(cb.vmax, cx+cw, cy+chh+fs*0.62);
+  ctx.textAlign = 'center';
+  ctx.fillText(cb.label, cx+cw/2, cy-fs*0.55);
+  ctx.textAlign = 'left';
+  return bh;
+}
+
+function dlBlob(blob, name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 30000);
+}
+
+async function exportMedia(kind, w, h){
+  const vis = activePanel(), fd = vis.fd;
+  if (!fd.frames.length) { exToast('No data in this panel'); return; }
+  const map = vis.map, sz = map.getSize();
+  const cm = PROJ.project(map.getCenter());
+  const e1 = PROJ.project(map.containerPointToLatLng([0, sz.y/2]));
+  const e2 = PROJ.project(map.containerPointToLatLng([sz.x, sz.y/2]));
+  const mercH = Math.abs(e2.x-e1.x) * (sz.y/sz.x);
+  const mercW = mercH * (w/h);
+  const win = {x0: cm.x-mercW/2, x1: cm.x+mercW/2,
+               y0: cm.y-mercH/2, y1: cm.y+mercH/2};
+
+  exToast('Rendering basemap\\u2026', true);
+  const base = document.createElement('canvas');
+  base.width = w; base.height = h;
+  await drawTiles(base.getContext('2d'),
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+    win, w, ['a','b','c','d']);
+
+  const refs = document.createElement('canvas');
+  refs.width = w; refs.height = h;
+  if (document.getElementById('ck-interstates').checked)
+    await drawTiles(refs.getContext('2d'),
+      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+      win, w, null);
+  if (document.getElementById('ck-counties').checked)
+    drawCounties(refs.getContext('2d'), win, w);
+
+  const xgl = makeExportGL(w, h, fd.cbar);
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const ctx = out.getContext('2d');
+  const logoS = Math.round(h*0.13), pad = Math.round(w*0.012);
+
+  async function compose(i){
+    const f = fd.frames[Math.min(i, fd.frames.length-1)];
+    ctx.clearRect(0,0,w,h);
+    ctx.drawImage(base,0,0);
+    await xgl.draw(f, Math.min(i, fd.frames.length-1), win);
+    ctx.drawImage(xgl.cnv,0,0);
+    ctx.drawImage(refs,0,0);
+    const bh = drawChrome(ctx, w, h,
+      SITE_ID+'  \\u00b7  '+f.label, fd.cbar);
+    drawLogo(ctx, pad, h-bh-logoS-pad, logoS);
+  }
+
+  const stamp = fd.frames[0].label.slice(0,10).replace(/-/g,'') + '_' +
+                fd.frames[0].label.slice(12,17).replace(':','') + 'Z';
+  const fldShort = (SHORT[fd.name]||fd.name).toLowerCase();
+  const base_name = SITE_ID+'_'+fldShort+'_'+stamp+'_'+w+'x'+h;
+
+  if (kind === 'still'){
+    await compose(Math.max(0, idx));
+    out.toBlob(b=>{ dlBlob(b, base_name+'.png');
+                    exToast('Image saved'); }, 'image/png');
+    return;
+  }
+  // loop -> movie via MediaRecorder
+  const mime = ['video/mp4;codecs=avc1.640028','video/mp4',
+                'video/webm;codecs=vp9','video/webm']
+    .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  if (!mime){ exToast('Video recording unsupported in this browser'); return; }
+  const ext = mime.indexOf('mp4')>=0 ? '.mp4' : '.webm';
+  const stream = out.captureStream(30);
+  const rec = new MediaRecorder(stream,
+    {mimeType:mime, videoBitsPerSecond: w>2000 ? 28e6 : 12e6});
+  const chunks = [];
+  rec.ondataavailable = e=>{ if (e.data.size) chunks.push(e.data); };
+  const done = new Promise(res=>{ rec.onstop = res; });
+  rec.start(250);
+  const n = fd.frames.length;
+  for (let i=0; i<n; i++){
+    exToast('Rendering frame '+(i+1)+'/'+n+'\\u2026', true);
+    await compose(i);
+    await new Promise(r=>setTimeout(r, 450));
+  }
+  rec.stop();
+  await done;
+  dlBlob(new Blob(chunks, {type:mime}), base_name+ext);
+  exToast('Movie saved ('+ext.slice(1)+')');
+}
+
+const EXMENU = document.getElementById('exmenu');
+document.getElementById('export').addEventListener('click', ()=>{
+  EXMENU.style.display = EXMENU.style.display==='flex' ? 'none' : 'flex';
+});
+EXMENU.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{
+  EXMENU.style.display = 'none';
+  const cfg = {still4k:['still',3840,2160], stillig:['still',1080,1080],
+               loop4k:['loop',3840,2160],  loopig:['loop',1080,1080]}[b.dataset.k];
+  exportMedia(cfg[0], cfg[1], cfg[2])
+    .catch(e=>exToast('Export failed: '+e.message));
+}));
 
 // stagger texture preloads
 panels.forEach((p,pi)=>p.fd.frames.forEach((_,i)=>
@@ -1547,6 +1877,12 @@ ILLINI_CSS = """
 .gradio-container .form { gap: 4px !important; }
 .gradio-container .gap, .gradio-container .gradio-row { gap: 6px !important; }
 footer { display: none !important; }
+@media (max-width: 700px) {
+  .gradio-container { padding: 8px 10px 4px !important; }
+  .gradio-container h1 { font-size: 15px !important; }
+  .gradio-container .prose, .gradio-container .prose p {
+    font-size: 11px !important; }
+}
 """
 
 # CliMAS logo: use logo.png if present in the repo, else an inline SVG replica
