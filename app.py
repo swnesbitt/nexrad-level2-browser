@@ -135,6 +135,17 @@ FIELDS = {
     ),
 }
 
+DEALIAS_NAME = "Radial velocity (dealiased)"
+DEALIAS_CFG = dict(
+    pyart="velocity", cmap="balance", vmin=-64, vmax=64,
+    units="m/s", label="Dealiased radial velocity", tick=16,
+)
+
+
+def _field_cfg(fn):
+    return DEALIAS_CFG if fn == DEALIAS_NAME else FIELDS[fn]
+
+
 ELEV_MAX = 0.75          # deg — treat sweeps below this as the 0.5° split cut
 MAX_FRAMES = 60          # safety cap on rendered sweeps
 N_PROC = max(1, min(2, os.cpu_count() or 1))   # decode workers (CPU-bound)
@@ -283,9 +294,11 @@ def polar_frame(radar, sweep, field_cfg):
     r0 = float(rng[0]) - dr / 2.0          # edge of first gate
     ngates = data.shape[1]
 
-    try:  # censor gates with no usable return (same-sweep reflectivity)
+    try:  # censor gates with no usable return (same-sweep reflectivity);
+        # skip when this sweep has no Z at all (legacy Doppler cuts)
         z = radar.get_field(sweep, "reflectivity")
-        mask = mask | _noreturn_mask(z)
+        if not np.all(np.ma.getmaskarray(z)):
+            mask = mask | _noreturn_mask(z)
     except Exception:
         pass
     vals = _scale_u8(np.ma.filled(data, field_cfg["vmin"]), mask, field_cfg)
@@ -458,6 +471,54 @@ def _process_xradar(path, key, cfgs):
         out[fname] = frames
     del dtree
     return out, site_ll
+
+
+def dealias_volume(bucket, key, dest_dir):
+    """Region-based dealiasing of the volume's 0.5° Doppler cuts (Py-ART).
+    Returns a list of frames for the dealiased-velocity field."""
+    frames = []
+    try:
+        path = download_volume(bucket, key, dest_dir)
+        radar = pyart.io.read_nexrad_archive(path)
+    except Exception:
+        return frames
+    fixed = radar.fixed_angle["data"]
+
+    def _has(sweep, f):
+        if f not in radar.fields:
+            return False
+        return not np.all(np.ma.getmaskarray(radar.get_field(sweep, f)))
+
+    cands = [s for s in range(radar.nsweeps)
+             if fixed[s] < ELEV_MAX and _has(s, "velocity")]
+    if not cands:
+        return frames
+    try:  # MPDA: keep highest-Nyquist cut per cluster
+        nyq = radar.instrument_parameters["nyquist_velocity"]["data"]
+        meta = []
+        for s in cands:
+            i0, i1 = radar.get_start_end(s)
+            meta.append(dict(s=s, t=sweep_datetime(radar, s),
+                             nyq=float(np.median(nyq[i0:i1 + 1]))))
+        cands = [m["s"] for m in _dedup_doppler(meta, lambda m: m["nyq"])]
+    except Exception:
+        pass
+    try:
+        sub = radar.extract_sweeps(cands)
+        corr = pyart.correct.dealias_region_based(
+            sub, vel_field="velocity", keep_original=False)
+        sub.fields["velocity"]["data"] = corr["data"]
+        polar_frame._vol = os.path.basename(key)
+        _vcp = radar.metadata.get("vcp_pattern")
+        polar_frame._vcp = f"VCP-{_vcp}" if _vcp else ""
+        for s in range(sub.nsweeps):
+            fr = polar_frame(sub, s, DEALIAS_CFG)
+            if fr is not None:
+                frames.append(fr)
+    except Exception:
+        pass
+    del radar
+    return frames
 
 
 def process_volume(bucket, key, cfgs, dest_dir):
@@ -1252,6 +1313,7 @@ panels.forEach(p=>{
 // view-mode switcher: every field's textures live in this one page, so
 // toggling Z/V/ZDR/CC/2x2 is instant — no reload, no refetch
 const SHORT = {'Reflectivity':'Z','Radial velocity':'V',
+  'Radial velocity (dealiased)':'V\\u2020',
   'Differential reflectivity':'ZDR','Correlation coefficient':'CC'};
 const modesEl = document.getElementById('modes');
 function mkBtn(txt, m){
@@ -1714,7 +1776,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base=""):
     """One page carrying ALL fields' polar textures; the requested view
     (single field or 2×2) is substituted into __MODE__ at serve time, so
     every field/4-panel switch after the first load is instant."""
-    data = [dict(name=fn, cbar=colorbar_cfg(FIELDS[fn]),
+    data = [dict(name=fn, cbar=colorbar_cfg(_field_cfg(fn)),
                  frames=[{k: f[k] for k in ("img", "naz", "ngates", "r0",
                                             "dr", "el", "maxr", "label")}
                          for f in frames])
@@ -1749,6 +1811,8 @@ def _mode_page(tpl, field_name, view=None):
 DEFAULT_VIEW = ("KILX", "Reflectivity", "2023", "06", "29", "18:00")
 _PAGE_CACHE = collections.OrderedDict()
 _PAGE_CACHE_CAP = 6   # hours; each bundle holds all four fields (~30-50 MB)
+_FRAME_CACHE = collections.OrderedDict()   # hour -> raw frames (for dealias)
+_FRAME_CACHE_CAP = 4
 _INFLIGHT = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -1782,6 +1846,8 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             if tpl is not None:
                 _PAGE_CACHE.move_to_end(key_h)
         if tpl is not None:
+            if field_name == DEALIAS_NAME and DEALIAS_NAME not in tpl:
+                tpl = _dealias_compute(site, date, hr, _p)
             return "", _mode_page(tpl, field_name, view)
         with _CACHE_LOCK:
             evt = _INFLIGHT.get(key_h)
@@ -1794,11 +1860,18 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             with _CACHE_LOCK:
                 tpl = _PAGE_CACHE.get(key_h)
             if tpl is not None:
+                if field_name == DEALIAS_NAME and DEALIAS_NAME not in tpl:
+                    tpl = _dealias_compute(site, date, hr, _p)
                 return "", _mode_page(tpl, field_name, view)
             # fall through and compute ourselves if the other run failed
 
         try:
-            return _browse_compute(site, field_name, date, hr, _p, view)
+            err, tpl = _browse_compute(site, field_name, date, hr, _p)
+            if err is not None:
+                return err
+            if field_name == DEALIAS_NAME and DEALIAS_NAME not in tpl:
+                tpl = _dealias_compute(site, date, hr, _p)
+            return "", _mode_page(tpl, field_name, view)
         finally:
             if owner:
                 with _CACHE_LOCK:
@@ -1822,10 +1895,9 @@ def _share_base(site, date, hr):
     return f"https://{host}/{qs}" if host else qs
 
 
-def _browse_compute(site, field_name, date, hr, _p, view=None):
+def _browse_compute(site, field_name, date, hr, _p):
     """Decode ALL fields in one pass over the hour's volumes; build and
-    cache the 4 single-field pages plus the 4-panel page; return the one
-    that was requested."""
+    cache the bundle template. Returns (error_tuple_or_None, tpl_or_None)."""
     try:
         _p(0.02, f"Listing Level 2 volumes for {site} {date} {hr:02d}Z…")
         bucket, keys = list_hour_keys(site, date, hr)
@@ -1834,7 +1906,7 @@ def _browse_compute(site, field_name, date, hr, _p, view=None):
                 f"No Level 2 volumes found for {site} on {date} "
                 f"{hr:02d}:00–{hr:02d}:59 UTC. Check the site ID and date "
                 f"(dual-pol fields require 2011+ for most sites)."
-            )
+            ), None
 
         by_field = {fn: [] for fn in FIELDS}
         site_ll = None
@@ -1882,7 +1954,7 @@ def _browse_compute(site, field_name, date, hr, _p, view=None):
                 f"Volumes were found for {site} in that hour, but no 0.5° "
                 f"sweep data could be decoded. Pre-dual-pol data (before "
                 f"~2011-2013 depending on site) has no ZDR/CC."
-            )
+            ), None
 
         _p(0.94, "Packing the all-field WebGL bundle (textures for every "
                  "field load once)…")
@@ -1895,9 +1967,53 @@ def _browse_compute(site, field_name, date, hr, _p, view=None):
             _PAGE_CACHE[_hour_key(site, date, hr)] = tpl
             while len(_PAGE_CACHE) > _PAGE_CACHE_CAP:
                 _PAGE_CACHE.popitem(last=False)
-        return "", _mode_page(tpl, field_name, view)
+            _FRAME_CACHE[_hour_key(site, date, hr)] = dict(
+                by_field=by_field, slat=slat, slon=slon)
+            while len(_FRAME_CACHE) > _FRAME_CACHE_CAP:
+                _FRAME_CACHE.popitem(last=False)
+        return None, tpl
     except Exception:
-        return _msg("Unexpected error:\n```\n" + traceback.format_exc()[-1500:] + "\n```")
+        return _msg("Unexpected error:\n```\n"
+                    + traceback.format_exc()[-1500:] + "\n```"), None
+
+
+def _dealias_compute(site, date, hr, _p):
+    """Region-based dealiasing for the hour; merges the new field into the
+    cached bundle and returns the updated template."""
+    key_h = _hour_key(site, date, hr)
+    with _CACHE_LOCK:
+        fc = _FRAME_CACHE.get(key_h)
+    if fc is None:  # server restarted since the hour was decoded
+        err, _tpl = _browse_compute(site, "Reflectivity", date, hr, _p)
+        if err is not None:
+            raise RuntimeError(err[0])
+        with _CACHE_LOCK:
+            fc = _FRAME_CACHE.get(key_h)
+    bucket, keys = list_hour_keys(site, date, hr)
+    n = len(keys)
+    dframes = []
+    with ProcessPoolExecutor(max_workers=N_PROC) as px:
+        pfuts = [px.submit(dealias_volume, bucket, k, VOL_CACHE_DIR)
+                 for k in keys]
+        done = 0
+        for fut in as_completed(pfuts):
+            done += 1
+            _p(0.05 + 0.85 * done / n,
+               f"Region-based dealiasing {done}/{n} volumes "
+               f"(Py-ART dealias_region_based)…")
+            dframes.extend(fut.result())
+    dframes.sort(key=lambda f: f["time"])
+    dframes = dframes[:MAX_FRAMES]
+    _p(0.95, "Rebuilding bundle with dealiased velocity…")
+    by_field = dict(fc["by_field"])
+    by_field[DEALIAS_NAME] = dframes
+    tpl = build_bundle_page(by_field, site, fc["slat"], fc["slon"],
+                            _share_base(site, date, hr))
+    with _CACHE_LOCK:
+        _PAGE_CACHE[key_h] = tpl
+        _FRAME_CACHE[key_h] = dict(by_field=by_field,
+                                   slat=fc["slat"], slon=fc["slon"])
+    return tpl
 
 
 def _msg(text):
@@ -2076,18 +2192,30 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             go = gr.Button("Load hour", variant="primary")
             dl = gr.DownloadButton("Download raw (.zip)",
                                    interactive=False, size="sm")
+            dax = gr.Button("Dealias velocity", interactive=False,
+                            size="sm")
     status = gr.Markdown()
     map_html = gr.HTML()
     def browse_h(site, field, year, month, day, hour,
                  progress=gr.Progress()):
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress)
-        return info, page, gr.DownloadButton(interactive=bool(page))
+        ok = bool(page)
+        return (info, page, gr.DownloadButton(interactive=ok),
+                gr.Button(interactive=ok))
 
     go.click(browse_h, [site_tb, field_dd, year_dd, month_dd, day_dd, hour_dd],
-             [status, map_html, dl], show_progress_on=map_html)
+             [status, map_html, dl, dax], show_progress_on=map_html)
     dl.click(prepare_archive,
              [site_tb, year_dd, month_dd, day_dd, hour_dd], dl)
+
+    def dealias_h(site, year, month, day, hour, progress=gr.Progress()):
+        info, page = browse(site, DEALIAS_NAME, year, month, day, hour,
+                            progress=progress)
+        return info, page
+
+    dax.click(dealias_h, [site_tb, year_dd, month_dd, day_dd, hour_dd],
+              [status, map_html], show_progress_on=map_html)
     gr.Markdown(
         "Level 2 decoding by [xradar](https://github.com/swnesbitt/xradar) "
         "(openradar; S. Nesbitt fork) "
@@ -2113,7 +2241,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             view = None
         site = q.get("site", "KILX").upper()[:4]
         field = q.get("field", "Reflectivity")
-        if field not in FIELDS and field != QUAD:
+        if field not in FIELDS and field not in (QUAD, DEALIAS_NAME):
             field = "Reflectivity"
         year = q.get("year", "2023")
         month = q.get("month", "06").zfill(2)
@@ -2132,7 +2260,9 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         visit, the shared view (incl. map center/zoom) when params exist."""
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress, view=view)
-        return info, page, gr.DownloadButton(interactive=bool(page))
+        ok = bool(page)
+        return (info, page, gr.DownloadButton(interactive=ok),
+                gr.Button(interactive=ok))
 
     demo.load(
         init_values, None,
@@ -2142,7 +2272,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         maybe_browse,
         [shared, view_st, site_tb, field_dd, year_dd, month_dd, day_dd,
          hour_dd],
-        [status, map_html, dl], show_progress_on=map_html,
+        [status, map_html, dl, dax], show_progress_on=map_html,
     )
 
 # pre-render the default case at startup so first visitors get it instantly
