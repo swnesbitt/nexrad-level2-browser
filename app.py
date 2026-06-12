@@ -2960,28 +2960,42 @@ addEventListener('DOMContentLoaded', function () {{
 }});
 </script>
 <script>
-// Embedded on huggingface.co the Space iframe is auto-resized from the
-// app's reported content height. The map iframe is sized with
-// calc(100vh - 205px), which makes content height self-referential:
-// any transient reflow (open dropdown, hover state) grows the host
-// iframe, which grows 100vh, which grows the map again - a one-way
-// ratchet. Break the loop by pinning the map to a fixed pixel height
-// (measured once from the viewport HF granted) whenever we are framed.
-addEventListener('DOMContentLoaded', function () {{
+// Embedded on huggingface.co the Space iframe is auto-resized (via
+// iframeResizer) from the app's reported content height. The map iframe
+// is sized with calc(100vh - 205px), so content height is always
+// ~viewport + footer: the host grows the iframe, 100vh grows, the map
+// grows again - a one-way ratchet that any reflow re-triggers. Break the
+// loop by pinning the map to a fixed pixel height whenever we are
+// framed. NOTE: must run immediately - this script can be evaluated
+// after DOMContentLoaded has already fired.
+(function () {{
   if (window.self === window.top) return;   // direct visit: keep vh sizing
   var pinH = null;
   function pin() {{
-    document.querySelectorAll('.html-container iframe').forEach(function (f) {{
-      if (f.dataset.hpin) return;
+    var ifs = document.querySelectorAll('.html-container iframe');
+    for (var i = 0; i < ifs.length; i++) {{
+      var f = ifs[i];
+      if (f.dataset.hpin) continue;
       f.dataset.hpin = '1';
-      if (pinH === null) pinH = Math.max(480, window.innerHeight - 205);
+      if (pinH === null) {{
+        // leave room for controls (~205px) + footer (~100px) so the
+        // app's content fits the viewport the host granted
+        pinH = Math.max(480, window.innerHeight - 305);
+      }}
       f.style.height = pinH + 'px';
-    }});
+    }}
   }}
-  pin();
-  new MutationObserver(pin).observe(document.body,
-                                    {{subtree: true, childList: true}});
-}});
+  function arm() {{
+    pin();
+    new MutationObserver(pin).observe(document.body,
+                                      {{subtree: true, childList: true}});
+  }}
+  if (document.readyState === 'loading') {{
+    addEventListener('DOMContentLoaded', arm);
+  }} else {{
+    arm();
+  }}
+}})();
 </script>
 """
 
