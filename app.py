@@ -348,8 +348,16 @@ def polar_frame_xr(ds, fvar, field_cfg, el, sweep_name, vol, vcp=""):
     ngates = data.shape[1]
 
     nodata = ~finite
+    rsv = _reserved_mask(ds, fvar, data)
+    if rsv is not None:  # below-threshold / range-folded codes
+        nodata = nodata | rsv
     if "DBZH" in ds:  # censor gates with no usable return
-        nodata = nodata | _noreturn_mask(ds["DBZH"].values)
+        zdat = ds["DBZH"].values
+        zbad = _noreturn_mask(zdat)
+        zrsv = _reserved_mask(ds, "DBZH", zdat)
+        if zrsv is not None:
+            zbad = zbad | zrsv
+        nodata = nodata | zbad
     vals = _scale_u8(np.nan_to_num(data, nan=field_cfg["vmin"]),
                      nodata, field_cfg)
     grid, naz = _regrid_az(az, vals)
@@ -365,6 +373,32 @@ def polar_frame_xr(ds, fvar, field_cfg, el, sweep_name, vol, vcp=""):
         label=(f"{t:%Y-%m-%d %H:%M:%S}Z  •  {el:.1f}°  •  {vcp_part}"
                f"{sweep_name}  •  {vol}"),
     )
+
+
+def _reserved_mask(ds, fvar, data):
+    """NEXRAD moment codes 0 (below threshold) and 1 (range folded) are
+    reserved, but xradar decodes them as physical values (no _FillValue in
+    its attrs). Mask anything at/below code 1 using the CF encoding."""
+    enc = getattr(ds[fvar], "encoding", {}) or {}
+    sf, ao = enc.get("scale_factor"), enc.get("add_offset")
+    if sf is None or ao is None:
+        return None
+    return data <= (ao + 1.5 * abs(sf))
+
+
+def _dedup_doppler(cands, nyq_of, window_s=90):
+    """Cluster Doppler cuts closer than window_s and keep the cut with the
+    largest (estimated) Nyquist velocity in each cluster."""
+    out = []
+    cluster = []
+    for s in cands:  # cands are in scan order
+        if cluster and (s["t"] - cluster[0]["t"]).total_seconds() > window_s:
+            out.append(max(cluster, key=nyq_of))
+            cluster = []
+        cluster.append(s)
+    if cluster:
+        out.append(max(cluster, key=nyq_of))
+    return out
 
 
 def _process_xradar(path, key, cfgs):
@@ -387,7 +421,8 @@ def _process_xradar(path, key, cfgs):
         if el >= ELEV_MAX:
             continue
         has_v = "VRADH" in ds and bool(np.isfinite(ds["VRADH"].values).any())
-        sweeps.append(dict(name=name, ds=ds, el=el, has_v=has_v))
+        sweeps.append(dict(name=name, ds=ds, el=el, has_v=has_v,
+                           t=_np_dt(ds["time"].values.min())))
 
     out = {}
     for fname, cfg in cfgs.items():
@@ -400,6 +435,17 @@ def _process_xradar(path, key, cfgs):
             # Doppler split cuts; fall back for merged-cut VCPs
             surv = [s for s in cands if not s["has_v"]]
             cands = surv or cands
+        else:
+            # MPDA (VCP 121) runs several near-simultaneous Doppler cuts at
+            # different PRFs: keep only the highest-Nyquist member of each
+            # cluster. With reserved codes masked, max |V| == the Nyquist.
+            def _est_nyq(s):
+                v = s["ds"][fvar].values
+                rsv = _reserved_mask(s["ds"], fvar, v)
+                if rsv is not None:
+                    v = np.where(rsv, np.nan, v)
+                return float(np.nanmax(np.abs(v)))
+            cands = _dedup_doppler(cands, _est_nyq)
         frames = []
         for s in cands:
             try:
@@ -459,6 +505,18 @@ def _process_pyart(path, key, cfgs):
         if cfg["pyart"] != "velocity":
             surv = [s for s in cands if not _has(s, "velocity")]
             cands = surv or cands
+        else:
+            try:
+                nyq = radar.instrument_parameters["nyquist_velocity"]["data"]
+                meta = []
+                for s in cands:
+                    i0, i1 = radar.get_start_end(s)
+                    meta.append(dict(s=s, t=sweep_datetime(radar, s),
+                                     nyq=float(np.median(nyq[i0:i1 + 1]))))
+                cands = [m["s"] for m in
+                         _dedup_doppler(meta, lambda m: m["nyq"])]
+            except Exception:
+                pass
         for sweep in cands:
             try:
                 fr = polar_frame(radar, sweep, cfg)
