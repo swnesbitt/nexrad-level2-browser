@@ -2959,6 +2959,30 @@ addEventListener('DOMContentLoaded', function () {{
                                childList: true}});
 }});
 </script>
+<script>
+// Embedded on huggingface.co the Space iframe is auto-resized from the
+// app's reported content height. The map iframe is sized with
+// calc(100vh - 205px), which makes content height self-referential:
+// any transient reflow (open dropdown, hover state) grows the host
+// iframe, which grows 100vh, which grows the map again - a one-way
+// ratchet. Break the loop by pinning the map to a fixed pixel height
+// (measured once from the viewport HF granted) whenever we are framed.
+addEventListener('DOMContentLoaded', function () {{
+  if (window.self === window.top) return;   // direct visit: keep vh sizing
+  var pinH = null;
+  function pin() {{
+    document.querySelectorAll('.html-container iframe').forEach(function (f) {{
+      if (f.dataset.hpin) return;
+      f.dataset.hpin = '1';
+      if (pinH === null) pinH = Math.max(480, window.innerHeight - 205);
+      f.style.height = pinH + 'px';
+    }});
+  }}
+  pin();
+  new MutationObserver(pin).observe(document.body,
+                                    {{subtree: true, childList: true}});
+}});
+</script>
 """
 
 gr.set_static_paths(paths=[VOL_CACHE_DIR])   # serves warnings.json
