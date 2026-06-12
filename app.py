@@ -1429,19 +1429,24 @@ function makeExportGL(w, h, cb){
   ['TEXTURE_WRAP_S','TEXTURE_WRAP_T'].forEach(p=>
     gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
   const cache = {};
+  async function ensureTex(f, i){
+    if (cache[i]) return;
+    const im = await loadImg('data:image/png;base64,'+f.img);
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,t);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.LUMINANCE,gl.LUMINANCE,
+                  gl.UNSIGNED_BYTE,im);
+    ['TEXTURE_MIN_FILTER','TEXTURE_MAG_FILTER'].forEach(p=>
+      gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.NEAREST));
+    ['TEXTURE_WRAP_S','TEXTURE_WRAP_T'].forEach(p=>
+      gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
+    cache[i] = t;
+  }
+  async function preload(frames){
+    for (let i=0;i<frames.length;i++) await ensureTex(frames[i], i);
+  }
   async function draw(f, i, win){
-    if (!cache[i]){
-      const im = await loadImg('data:image/png;base64,'+f.img);
-      const t = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,t);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.LUMINANCE,gl.LUMINANCE,
-                    gl.UNSIGNED_BYTE,im);
-      ['TEXTURE_MIN_FILTER','TEXTURE_MAG_FILTER'].forEach(p=>
-        gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.NEAREST));
-      ['TEXTURE_WRAP_S','TEXTURE_WRAP_T'].forEach(p=>
-        gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
-      cache[i] = t;
-    }
+    await ensureTex(f, i);
     gl.viewport(0,0,w,h);
     gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,cache[i]);
@@ -1456,7 +1461,15 @@ function makeExportGL(w, h, cb){
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
   }
-  return {cnv, draw};
+  return {cnv, draw, preload};
+}
+
+function ellipsize(ctx, text, maxw){
+  if (ctx.measureText(text).width <= maxw) return text;
+  while (text.length > 1 &&
+         ctx.measureText(text+'\\u2026').width > maxw)
+    text = text.slice(0, -1);
+  return text+'\\u2026';
 }
 
 function drawLogo(ctx, x, y, s){
@@ -1479,19 +1492,24 @@ function drawLogo(ctx, x, y, s){
 
 function drawChrome(ctx, w, h, text, cb){
   const bh = Math.max(44, Math.round(h*0.062));
+  const pad = Math.round(w*0.012);
   ctx.fillStyle = '#13294B'; ctx.fillRect(0, h-bh, w, bh);
   ctx.fillStyle = '#FF5F05'; ctx.fillRect(0, h-bh, w, Math.max(2, bh*0.07));
   const fs = Math.round(bh*0.32);
-  ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline='middle';
+  // colorbar zone reserved at right
+  const cw = Math.round(Math.min(w*0.2, 320)),
+        chh = Math.max(8, Math.round(bh*0.26)),
+        cx = w-cw-pad, cy = h-bh*0.72;
+  const maxText = cx - 2*pad;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff';
   ctx.font = "600 "+fs+"px 'Source Sans 3', sans-serif";
-  ctx.fillText(text, Math.round(w*0.012), h-bh*0.62);
+  ctx.fillText(ellipsize(ctx, text, maxText), pad, h-bh*0.62);
   ctx.fillStyle = '#C8C6C7';
   ctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
-  ctx.fillText('CliMAS \\u00b7 Illinois \\u00b7 NEXRAD Level 2 browser',
-               Math.round(w*0.012), h-bh*0.22);
-  // horizontal colorbar at right
-  const cw = Math.round(w*0.2), chh = Math.max(8, Math.round(bh*0.26)),
-        cx = w-cw-Math.round(w*0.012), cy = h-bh*0.72;
+  ctx.fillText(ellipsize(ctx,
+    'CliMAS \\u00b7 Illinois \\u00b7 NEXRAD Level 2 browser', maxText),
+    pad, h-bh*0.22);
   const g = ctx.createLinearGradient(cx,0,cx+cw,0);
   cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
   ctx.fillStyle = g; ctx.fillRect(cx, cy, cw, chh);
@@ -1499,7 +1517,7 @@ function drawChrome(ctx, w, h, text, cb){
   ctx.textAlign = 'left';  ctx.fillText(cb.vmin, cx, cy+chh+fs*0.62);
   ctx.textAlign = 'right'; ctx.fillText(cb.vmax, cx+cw, cy+chh+fs*0.62);
   ctx.textAlign = 'center';
-  ctx.fillText(cb.label, cx+cw/2, cy-fs*0.55);
+  ctx.fillText(ellipsize(ctx, cb.label, cw+2*pad), cx+cw/2, cy-fs*0.55);
   ctx.textAlign = 'left';
   return bh;
 }
@@ -1540,25 +1558,40 @@ async function exportMedia(kind, w, h){
     drawCounties(refs.getContext('2d'), win, w);
 
   const xgl = makeExportGL(w, h, fd.cbar);
+  // double buffer: compose on `work`, blit complete frames to `out` —
+  // the recorder only ever sees finished composites
+  const work = document.createElement('canvas');
+  work.width = w; work.height = h;
+  const wctx = work.getContext('2d');
   const out = document.createElement('canvas');
   out.width = w; out.height = h;
-  const ctx = out.getContext('2d');
+  const octx = out.getContext('2d');
   const logoS = Math.round(h*0.13), pad = Math.round(w*0.012);
 
+  function shortLabel(f){
+    const parts = f.label.split('\\u2022').map(s=>s.trim());
+    let t = SITE_ID+' \\u00b7 '+parts[0]+(parts[1]?' \\u00b7 '+parts[1]:'');
+    if (parts[2] && parts[2].indexOf('VCP') === 0)
+      t += ' \\u00b7 '+parts[2];
+    return t;
+  }
   async function compose(i){
-    const f = fd.frames[Math.min(i, fd.frames.length-1)];
-    ctx.clearRect(0,0,w,h);
-    ctx.drawImage(base,0,0);
-    await xgl.draw(f, Math.min(i, fd.frames.length-1), win);
-    ctx.drawImage(xgl.cnv,0,0);
-    ctx.drawImage(refs,0,0);
-    const bh = drawChrome(ctx, w, h,
-      SITE_ID+'  \\u00b7  '+f.label, fd.cbar);
-    drawLogo(ctx, pad, h-bh-logoS-pad, logoS);
+    const fi = Math.min(i, fd.frames.length-1);
+    const f = fd.frames[fi];
+    await xgl.draw(f, fi, win);
+    wctx.clearRect(0,0,w,h);
+    wctx.drawImage(base,0,0);
+    wctx.drawImage(xgl.cnv,0,0);
+    wctx.drawImage(refs,0,0);
+    const bh = drawChrome(wctx, w, h, shortLabel(f), fd.cbar);
+    drawLogo(wctx, pad, h-bh-logoS-pad, logoS);
+    octx.clearRect(0,0,w,h);
+    octx.drawImage(work,0,0);
   }
 
-  const stamp = fd.frames[0].label.slice(0,10).replace(/-/g,'') + '_' +
-                fd.frames[0].label.slice(12,17).replace(':','') + 'Z';
+  const f0 = fd.frames[0];
+  const stamp = f0.label.slice(0,10).replace(/-/g,'') + '_' +
+                f0.label.slice(11,16).split(':').join('') + 'Z';
   const fldShort = (SHORT[fd.name]||fd.name).toLowerCase();
   const base_name = SITE_ID+'_'+fldShort+'_'+stamp+'_'+w+'x'+h;
 
@@ -1568,22 +1601,25 @@ async function exportMedia(kind, w, h){
                     exToast('Image saved'); }, 'image/png');
     return;
   }
-  // loop -> movie via MediaRecorder
+  // loop -> movie via MediaRecorder; pre-decode every radar texture first
   const mime = ['video/mp4;codecs=avc1.640028','video/mp4',
                 'video/webm;codecs=vp9','video/webm']
     .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   if (!mime){ exToast('Video recording unsupported in this browser'); return; }
   const ext = mime.indexOf('mp4')>=0 ? '.mp4' : '.webm';
+  exToast('Preparing radar textures\\u2026', true);
+  await xgl.preload(fd.frames);
+  await compose(0);                       // first full frame before recording
   const stream = out.captureStream(30);
   const rec = new MediaRecorder(stream,
-    {mimeType:mime, videoBitsPerSecond: w>2000 ? 28e6 : 12e6});
+    {mimeType:mime, videoBitsPerSecond: w>2000 ? 32e6 : 16e6});
   const chunks = [];
   rec.ondataavailable = e=>{ if (e.data.size) chunks.push(e.data); };
   const done = new Promise(res=>{ rec.onstop = res; });
   rec.start(250);
   const n = fd.frames.length;
   for (let i=0; i<n; i++){
-    exToast('Rendering frame '+(i+1)+'/'+n+'\\u2026', true);
+    exToast('Recording frame '+(i+1)+'/'+n+'\\u2026', true);
     await compose(i);
     await new Promise(r=>setTimeout(r, 450));
   }
