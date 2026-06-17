@@ -1440,10 +1440,12 @@ const INIT_DEAL = __DEAL__;   // start with dealiased velocity shown
 const RT = __RT__;            // real-time (trailing hour) mode
 const WARN_URL = "__WARNURL__";
 const CITIES_URL = "__CITIESURL__";
+const LIVE_URL = "__LIVEURL__";        // full live frame set (fetched on change)
+const LIVE_TAG_URL = "__LIVETAGURL__"; // tiny etag sidecar (polled cheaply)
 const DEALF = "Radial velocity (dealiased)";
-const DEAL = DATA.find(d => d.name === DEALF) || null;
+let DEAL = DATA.find(d => d.name === DEALF) || null;
 const PANEL_DATA = DATA.filter(d => d.name !== DEALF);
-const RAWV = PANEL_DATA.find(d => d.name === 'Radial velocity') || null;
+let RAWV = PANEL_DATA.find(d => d.name === 'Radial velocity') || null;
 let mode = __MODE__;
 if (mode === DEALF) mode = 'Radial velocity';
 if (mode !== 'quad' && mode !== 'zv' &&
@@ -1778,7 +1780,7 @@ setTimeout(function(){
 }, 90);
 
 // controls
-const nmax = Math.max.apply(null, PANEL_DATA.map(fd=>fd.frames.length));
+let nmax = Math.max.apply(null, PANEL_DATA.map(fd=>fd.frames.length));
 const slider = document.getElementById('slider');
 slider.max = nmax-1;
 const label = document.getElementById('label'),
@@ -1895,19 +1897,47 @@ if (INIT_DEAL && DEAL && DEAL.frames.length){
 
 // ------------------------------------------------------------- real-time
 if (RT){
-  // auto-refresh the trailing hour via the parent page; setInterval (not a
-  // one-shot timeout) so the chain survives refreshes whose response is
-  // byte-identical to the current page (cache hits skip the iframe swap,
-  // which would orphan a one-shot timer). A swapped-in bundle replaces the
-  // iframe wholesale, killing this interval with it. Keep the dealias
-  // state across refreshes by picking the right trigger.
-  setInterval(()=>{
+  // Live updates merge new frames IN PLACE — no iframe reload. The old design
+  // reloaded the whole ~40MB bundle every tick (parent rt-refresh click /
+  // server Timer), blanking the map ("grey-out"). Now we poll a tiny etag
+  // sidecar; only when it changes do we fetch the full frame set and swap
+  // each panel's data via setData, preserving pan/zoom/playback/mode.
+  let liveTag = __LIVETAG0__;
+  function applyLive(j){
+    if (!j || !j.fields) return;
+    const byName = {};
+    j.fields.forEach(fd=>{ byName[fd.name] = fd; });
+    if (byName[DEALF]) DEAL = byName[DEALF];
+    if (byName['Radial velocity']) RAWV = byName['Radial velocity'];
+    const oldNmax = nmax;
+    panels.forEach(p=>{
+      // a velocity panel currently showing dealiased data keeps showing it
+      if (p.name === 'Radial velocity' && p.fd.name === DEALF){
+        if (DEAL && DEAL.frames.length) p.setData(DEAL);
+        return;
+      }
+      const nf = byName[p.name];
+      if (nf) p.setData(nf);
+    });
+    nmax = Math.max.apply(null, panels.map(p=>p.fd.frames.length));
+    slider.max = Math.max(0, nmax-1);
+    if (idx >= oldNmax-1 && nmax-1 !== idx) show(nmax-1);   // follow newest
+    else { if (idx>=0) refreshLabel(idx); panels.forEach(p=>p.requestDraw()); }
+  }
+  async function pollLive(){
     try {
-      const id = (ckDeal && ckDeal.checked) ? 'dax-trigger' : 'rt-refresh';
-      const h = parent.document.getElementById(id);
-      (h.querySelector('button') || h).click();
+      const r = await fetch(LIVE_TAG_URL + '?t=' + Date.now(),
+                            {cache:'no-store'});
+      if (!r.ok) return;
+      const t = await r.json();
+      if (!t || t.etag === liveTag) return;
+      const r2 = await fetch(LIVE_URL + '?t=' + Date.now(), {cache:'no-store'});
+      if (!r2.ok) return;
+      const j = await r2.json();
+      if (j && j.etag){ liveTag = j.etag; applyLive(j); }
     } catch (err) {}
-  }, __RTSEC__ * 1000);
+  }
+  setInterval(pollLive, 30 * 1000);
   // poll current TOR/SVR warnings every minute; redraw on change
   let warnTag = null, warnLayers = [];
   async function pollWarnings(){
@@ -2727,16 +2757,56 @@ def _export_logo_b64():
 EXPORT_LOGO_B64 = _export_logo_b64()
 
 
+def _bundle_data(by_field):
+    """The per-field DATA payload (textures + colorbar) the bundle renders."""
+    return [dict(name=fn, cbar=colorbar_cfg(_field_cfg(fn)),
+                 frames=[{k: f[k] for k in ("img", "naz", "ngates", "r0",
+                                            "dr", "el", "maxr", "label")}
+                         for f in frames])
+            for fn, frames in by_field.items()]
+
+
+def _live_sig(data):
+    """Cheap content signature: changes whenever any frame is added/updated."""
+    parts = []
+    for d in data:
+        parts.append(d["name"] + ":" + str(len(d["frames"])))
+        parts.append(",".join(str(fr["label"]) for fr in d["frames"]))
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+
+
+def _live_paths(site):
+    s = site.upper()
+    return (os.path.join(VOL_CACHE_DIR, f"live_{s}.json"),
+            os.path.join(VOL_CACHE_DIR, f"live_{s}.tag.json"))
+
+
+def _write_live(site, by_field):
+    """Write the live frame set (+ a tiny etag-only sidecar) so the in-page
+    poller can merge new frames WITHOUT reloading the whole iframe."""
+    try:
+        data = _bundle_data(by_field)
+        etag = _live_sig(data)
+        big, tag = _live_paths(site)
+        for path, payload in ((big, dict(etag=etag, fields=data)),
+                              (tag, dict(etag=etag))):
+            tmp = path + ".part"
+            with open(tmp, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+        return etag
+    except Exception:
+        return ""
+
+
 def build_bundle_page(by_field, site, slat, slon, share_base="",
                       rt_refresh_s=300):
     """One page carrying ALL fields' polar textures; the requested view
     (single field or 2×2) is substituted into __MODE__ at serve time, so
     every field/4-panel switch after the first load is instant."""
-    data = [dict(name=fn, cbar=colorbar_cfg(_field_cfg(fn)),
-                 frames=[{k: f[k] for k in ("img", "naz", "ngates", "r0",
-                                            "dr", "el", "maxr", "label")}
-                         for f in frames])
-            for fn, frames in by_field.items()]
+    data = _bundle_data(by_field)
+    etag = _live_sig(data)
+    big, tag = _live_paths(site)
     page = (QUAD_PAGE
             .replace("__DATA__", json.dumps(data))
             .replace("__SLAT__", f"{slat:.5f}")
@@ -2744,6 +2814,9 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__SITE__", site)
             .replace("__WARNURL__", WARN_URL)
             .replace("__CITIESURL__", CITIES_URL)
+            .replace("__LIVEURL__", "/gradio_api/file=" + big)
+            .replace("__LIVETAGURL__", "/gradio_api/file=" + tag)
+            .replace("__LIVETAG0__", json.dumps(etag))
             .replace("__LOGOB64__", EXPORT_LOGO_B64)
             .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
@@ -3002,6 +3075,7 @@ def _rt_finish(site, field_name, _p, view, want_deal, by_field, site_ll):
     rtsec = 120 if site in CHUNK_SITES else 300
     tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
                             f"?site={site}&rt=1", rt_refresh_s=rtsec)
+    _write_live(site, by_field)   # refresh the in-place poll file
     _RT_CACHE[site] = dict(ts=time_mod.time(), tpl=tpl, by_field=by_field,
                            site_ll=site_ll,
                            has_deal=DEALIAS_NAME in by_field)
@@ -3553,10 +3627,14 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     def rt_tick(mode, site, field, deal, progress=gr.Progress()):
         if mode != "Live":
             return gr.skip(), gr.skip()
-        info, page = browse(site, "Radial velocity" if deal else field,
-                            "", "", "", "", progress=progress,
-                            realtime=True, want_deal=deal)
-        return info, page
+        # refresh the live frame file for the in-page poller; do NOT replace
+        # the iframe — the client merges new frames in place (no grey-out)
+        try:
+            browse(site, "Radial velocity" if deal else field, "", "", "", "",
+                   progress=progress, realtime=True, want_deal=deal)
+        except Exception:
+            pass
+        return gr.skip(), gr.skip()
 
     rt_timer.tick(rt_tick, [mode_sw, site_tb, field_dd, deal_st],
                   [status, map_html], show_progress="hidden")
