@@ -2956,7 +2956,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 188px);'
+            f'style="width:100%;height:calc(100vh - 160px);'
             f'min-height:480px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
@@ -3508,14 +3508,19 @@ ILLINI_THEME = gr.themes.Default(
 ILLINI_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Source+Sans+3:wght@400;600;700&display=swap');
 .gradio-container { background: #13294B !important; max-width: 100% !important;
-  padding: 2px !important;
+  padding: 0 !important;
   font-family: 'Source Sans 3','Source Sans Pro',system-ui,Arial,sans-serif !important; }
+/* the app wrapper (<main class="fillable app">) is centred at 1280px with 32px
+   padding by default — make the content span the full window with 2px edges */
+.gradio-container > main, .gradio-container .fillable, .gradio-container main.app {
+  max-width: 100% !important; margin: 0 !important; padding: 2px !important; }
 /* collapse all inter-element spacing so the map gets the window */
-.gradio-container .main, .gradio-container .main > .wrap,
-.gradio-container .main > div { gap: 2px !important; }
-.gradio-container .gap { gap: 2px !important; }
+.gradio-container .gap, .gradio-container .wrap,
+.gradio-container .contain { gap: 2px !important; }
 .gradio-container .html-container { padding: 0 !important; margin: 0 !important; }
 .gradio-container .block { margin: 0 !important; }
+/* the map fills edge-to-edge */
+#map-html, #map-html .html-container, #map-html .block { padding: 0 !important; }
 .gradio-container h1 { font-family: 'Montserrat','Arial Black',sans-serif !important;
   font-weight: 800 !important; text-transform: uppercase; letter-spacing: .06em;
   font-size: 17px !important; margin: 0 !important;
@@ -3654,7 +3659,7 @@ addEventListener('DOMContentLoaded', function () {{
       if (pinH === null) {{
         // leave room for the compact header + control row + footer so the
         // map fills the granted viewport with minimal dead space
-        pinH = Math.max(480, window.innerHeight - 188);
+        pinH = Math.max(480, window.innerHeight - 160);
       }}
       f.style.height = pinH + 'px';
     }}
@@ -3708,7 +3713,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             # re-decode now (picks up new scans) without reloading the iframe
             frr = gr.Button("Force live", elem_id="rt-force", size="sm")
     status = gr.Markdown()
-    map_html = gr.HTML()
+    map_html = gr.HTML(elem_id="map-html")
 
     shared = gr.State(False)
     view_st = gr.State(None)
