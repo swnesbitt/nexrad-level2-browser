@@ -3581,9 +3581,10 @@ HEADER_HTML = f"""
   <div>
     <h1>NEXRAD Level 2 — 0.5° sweep browser</h1>
     <p style="color:#C8C6C7;font-size:13px;margin:2px 0">
-      Browse one hour of archived WSR-88D base scans (SAILS-aware) from the
-      <a href="https://registry.opendata.aws/noaa-nexrad/" target="_blank"
-         style="color:#FF8136">AWS Open Data archive</a>.</p>
+      Brought to you by the
+      <a href="https://climas.illinois.edu" target="_blank"
+         style="color:#FF8136">Department of Climate, Meteorology &amp;
+         Atmospheric Sciences</a>, University of Illinois Urbana–Champaign</p>
   </div>
 </div>"""
 
