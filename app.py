@@ -3773,6 +3773,8 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         "(openradar; S. Nesbitt fork) "
         "· radar processing by [Py-ART](https://arm-doe.github.io/pyart/) "
         "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
+        "· velocity dealiasing by the Rust region-based dealiaser "
+        "[region-dealias](https://github.com/swnesbitt/region-dealias) "
         "· colormaps from [cmweather](https://github.com/openradar/cmweather) "
         "and [CMasher](https://cmasher.readthedocs.io) "
         "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
