@@ -1467,6 +1467,11 @@ QUAD_PAGE = """<!DOCTYPE html>
 const DATA = __DATA__;
 const SITE = [__SLAT__, __SLON__];
 const SITE_ID = "__SITE__";
+// reflect the loaded radar site in the browser tab title (the tab shows the
+// top document's title; the bundle is same-origin with the app page)
+try { parent.document.title =
+        SITE_ID + " \\u00b7 NEXRAD Level 2 \\u2014 0.5\\u00b0 browser"; }
+catch (e) { try { document.title = SITE_ID; } catch (e2) {} }
 const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
 const ZVF = "Z+V (2-panel)";
