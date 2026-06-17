@@ -1297,6 +1297,7 @@ QUAD_PAGE = """<!DOCTYPE html>
        background:#0c1d38}
  #grid.quad{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
  #grid.zv{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+ #grid.zv.zvlr{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
  .panel{position:relative;overflow:hidden}
  .pmap{position:absolute;inset:0}
  /* radar canvas lives in a Leaflet pane (z 250): tiles(200) < radar(250)
@@ -1447,6 +1448,7 @@ let DEAL = DATA.find(d => d.name === DEALF) || null;
 const PANEL_DATA = DATA.filter(d => d.name !== DEALF);
 let RAWV = PANEL_DATA.find(d => d.name === 'Radial velocity') || null;
 let mode = __MODE__;
+let zvOrient = 'tb';   // 2x1 orientation: 'tb' (top/bottom) or 'lr' (left/right)
 if (mode === DEALF) mode = 'Radial velocity';
 if (mode !== 'quad' && mode !== 'zv' &&
     !PANEL_DATA.some(fd => fd.name === mode))
@@ -1745,6 +1747,8 @@ if (PANEL_DATA.length > 1) mkBtn('2\\u00d72', 'quad');
 // so a dealiased velocity panel still counts as the velocity panel)
 const ZV_SET = {'Reflectivity':1, 'Radial velocity':1};
 function setMode(m){
+  // clicking Z+V while already in 2x1 flips its orientation (tb <-> lr)
+  if (m === 'zv' && mode === 'zv') zvOrient = (zvOrient === 'tb' ? 'lr' : 'tb');
   mode = m;
   const grid = document.getElementById('grid');
   let zcDone = false;
@@ -1759,6 +1763,7 @@ function setMode(m){
   });
   grid.classList.toggle('quad', m === 'quad');
   grid.classList.toggle('zv', m === 'zv');
+  grid.classList.toggle('zvlr', m === 'zv' && zvOrient === 'lr');
   document.querySelectorAll('#modes button').forEach(b=>
     b.classList.toggle('act', b.dataset.m === m));
   setTimeout(()=>{
@@ -3400,6 +3405,10 @@ ILLINI_CSS = """
   height: 38px !important; display: flex !important;
   align-items: center !important; box-sizing: border-box !important; }
 #ctrl-row button { font-size: 13px !important; padding: 6px 8px !important; }
+/* visually grey the time dropdowns when disabled (Live mode) — Gradio sets
+   the input disabled but doesn't dim it, so the lock wasn't obvious */
+#ctrl-row .block:has(input:disabled) { opacity: .45 !important; }
+#ctrl-row .block:has(input:disabled) input { cursor: not-allowed !important; }
 @media (max-width: 900px) { #ctrl-row { flex-wrap: wrap !important; } }
 footer { display: none !important; }
 #dax-trigger, #rt-refresh { display: none !important; }
