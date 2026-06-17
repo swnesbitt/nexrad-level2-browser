@@ -2956,7 +2956,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 160px);'
+            f'style="width:100%;height:calc(100vh - 170px);'
             f'min-height:480px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
@@ -3659,7 +3659,7 @@ addEventListener('DOMContentLoaded', function () {{
       if (pinH === null) {{
         // leave room for the compact header + control row + footer so the
         // map fills the granted viewport with minimal dead space
-        pinH = Math.max(480, window.innerHeight - 160);
+        pinH = Math.max(480, window.innerHeight - 170);
       }}
       f.style.height = pinH + 'px';
     }}
