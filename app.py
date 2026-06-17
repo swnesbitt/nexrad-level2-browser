@@ -619,7 +619,8 @@ def colorbar_cfg(field_cfg, n=256):
     stops = [matplotlib.colors.to_hex(cm(i / (n - 1))) for i in range(n)]
     unit = f" ({field_cfg['units']})" if field_cfg["units"] else ""
     return dict(stops=stops, vmin=field_cfg["vmin"], vmax=field_cfg["vmax"],
-                tick=field_cfg["tick"], label=f"{field_cfg['label']}{unit}")
+                tick=field_cfg["tick"], units=field_cfg["units"],
+                label=f"{field_cfg['label']}{unit}")
 
 
 XR_FIELD = {"reflectivity": "DBZH", "velocity": "VRADH",
@@ -2428,13 +2429,15 @@ async function exportQuad(kind, w, h){
           cx = ox+qw-cw2-fs, cy = oy+qh-chh-fs*1.7;
     const g = wctx.createLinearGradient(cx,0,cx+cw2,0);
     cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
-    rrPath(wctx, cx-fs*0.5, cy-fs*0.45, cw2+fs, chh+fs*1.6, fs*0.35);
+    rrPath(wctx, cx-fs*0.5, cy-fs*1.5, cw2+fs, chh+fs*2.65, fs*0.35);
     wctx.fillStyle = 'rgba(7,16,32,.55)'; wctx.fill();
     wctx.fillStyle = g; wctx.fillRect(cx, cy, cw2, chh);
     wctx.fillStyle = '#fff';
     wctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
     wctx.textAlign = 'left';  wctx.fillText(cb.vmin, cx, cy+chh+fs*0.55);
     wctx.textAlign = 'right'; wctx.fillText(cb.vmax, cx+cw2, cy+chh+fs*0.55);
+    if (cb.units){ wctx.textAlign = 'center';
+      wctx.fillText(cb.units, cx+cw2/2, cy-fs*0.55); }
     drawCbarTicks(wctx, cx, cy, cw2, chh, cb, fs*0.9);
     wctx.textAlign = 'left';
     wctx.restore();
@@ -2598,13 +2601,15 @@ async function exportZV(kind, w, h){
           cx = ox+qw-cw2-fs, cy = oy+qh-chh-fs*1.7;
     const g = wctx.createLinearGradient(cx,0,cx+cw2,0);
     cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
-    rrPath(wctx, cx-fs*0.5, cy-fs*0.45, cw2+fs, chh+fs*1.6, fs*0.35);
+    rrPath(wctx, cx-fs*0.5, cy-fs*1.5, cw2+fs, chh+fs*2.65, fs*0.35);
     wctx.fillStyle = 'rgba(7,16,32,.55)'; wctx.fill();
     wctx.fillStyle = g; wctx.fillRect(cx, cy, cw2, chh);
     wctx.fillStyle = '#fff';
     wctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
     wctx.textAlign = 'left';  wctx.fillText(cb.vmin, cx, cy+chh+fs*0.55);
     wctx.textAlign = 'right'; wctx.fillText(cb.vmax, cx+cw2, cy+chh+fs*0.55);
+    if (cb.units){ wctx.textAlign = 'center';
+      wctx.fillText(cb.units, cx+cw2/2, cy-fs*0.55); }
     drawCbarTicks(wctx, cx, cy, cw2, chh, cb, fs*0.9);
     wctx.textAlign = 'left';
     wctx.restore();
