@@ -62,6 +62,9 @@ except Exception:
 
 # label shown in the progress bar so it's clear which dealiaser ran
 _DEALIAS_ENGINE = "Rust region-dealias" if _HAVE_REGION_DEALIAS else "Py-ART"
+print(f"[region-dealias] velocity dealias engine = {_DEALIAS_ENGINE}"
+      + (f" v{_region_dealias.__version__}" if _HAVE_REGION_DEALIAS else ""),
+      flush=True)
 
 
 def _dealias_region_based(radar, **kwargs):
