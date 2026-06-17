@@ -161,6 +161,7 @@ N_PROC = max(1, min(2, os.cpu_count() or 1))   # decode workers (CPU-bound)
 VOL_CACHE_DIR = os.path.join(tempfile.gettempdir(), "nexrad_vol_cache")
 os.makedirs(VOL_CACHE_DIR, exist_ok=True)
 VOL_CACHE_BYTES = 2 << 30  # 2 GiB
+VOL_CACHE_MAX_AGE_S = 24 * 3600  # also evict raw volumes older than 24 h
 
 
 # ---- live Level 2 chunk feed (Phase 1) --------------------------------------
@@ -435,10 +436,11 @@ def _prune_vol_cache():
                  if os.path.basename(p) not in _CACHE_KEEP
                  and os.path.isfile(p)]
         files.sort(reverse=True)
+        now = time_mod.time()
         total = 0
         for mt, sz, p in files:
             total += sz
-            if total > VOL_CACHE_BYTES:
+            if total > VOL_CACHE_BYTES or (now - mt) > VOL_CACHE_MAX_AGE_S:
                 os.remove(p)
     except Exception:
         pass
