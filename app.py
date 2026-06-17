@@ -60,6 +60,9 @@ try:
 except Exception:
     _HAVE_REGION_DEALIAS = False
 
+# label shown in the progress bar so it's clear which dealiaser ran
+_DEALIAS_ENGINE = "Rust region-dealias" if _HAVE_REGION_DEALIAS else "Py-ART"
+
 
 def _dealias_region_based(radar, **kwargs):
     """region_dealias when present, else pyart; pyart fallback on NotImplemented."""
@@ -3094,7 +3097,7 @@ def _realtime_chunks_inner(site, field_name, _p, view, want_deal=False):
                         dn += 1
                         _p(0.74 + 0.18 * dn / max(1, len(todo_d)),
                            f"Dealiasing live volume {v['vol']} "
-                           f"({dn}/{len(todo_d)})…")
+                           f"({dn}/{len(todo_d)}, {_DEALIAS_ENGINE})…")
                         try:
                             _CHUNK_DEAL[(site, v["vol"])] = fut.result()
                         except Exception:
@@ -3156,7 +3159,8 @@ def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
                     for fut in as_completed(pfuts):
                         done += 1
                         _p(0.72 + 0.22 * done / n,
-                           f"Dealiasing live volumes {done}/{n}…")
+                           f"Dealiasing live volumes {done}/{n} "
+                           f"({_DEALIAS_ENGINE})…")
                         dframes.extend(fut.result())
         dframes.sort(key=lambda f: f["time"])
         by_field[DEALIAS_NAME] = dframes[:MAX_FRAMES]
@@ -3402,7 +3406,7 @@ def _dealias_compute(site, date, hr, _p):
                     done += 1
                     _p(0.05 + 0.85 * done / n,
                        f"Region-based dealiasing {done}/{n} volumes "
-                       f"(Py-ART dealias_region_based)…")
+                       f"({_DEALIAS_ENGINE})…")
                     dframes.extend(fut.result())
     dframes.sort(key=lambda f: f["time"])
     dframes = dframes[:MAX_FRAMES]
