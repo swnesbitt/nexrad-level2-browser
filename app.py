@@ -1810,11 +1810,19 @@ function show(i){
 slider.addEventListener('input', e=>show(+e.target.value));
 op.addEventListener('input', e=>{opacity=e.target.value/100;
   panels.forEach(p=>p.requestDraw());});
+const FRAME_MS = 450, END_DWELL = 4;   // hold the last frame 4x before looping
+function playStep(){
+  const next = (idx+1) % nmax;
+  show(next);
+  timer = setTimeout(playStep,
+                     FRAME_MS * (next === nmax-1 ? END_DWELL : 1));
+}
 playBtn.addEventListener('click', ()=>{
   playing=!playing;
   playBtn.innerHTML = playing?'&#10074;&#10074;':'&#9654;';
-  if(playing) timer=setInterval(()=>show((idx+1)%nmax),450);
-  else clearInterval(timer);
+  if(playing) timer = setTimeout(playStep,
+                     FRAME_MS * (idx === nmax-1 ? END_DWELL : 1));
+  else clearTimeout(timer);
 });
 document.addEventListener('keydown', e=>{
   if(e.key==='ArrowRight') show(Math.min(idx+1,nmax-1));
@@ -2456,7 +2464,8 @@ async function exportQuad(kind, w, h){
   for (let i=0; i<nmax; i++){
     exToast('Recording frame '+(i+1)+'/'+nmax+'\\u2026', true);
     await compose(i);
-    await new Promise(r=>setTimeout(r, 450));
+    await new Promise(r=>setTimeout(r,
+      FRAME_MS * (i === nmax-1 ? END_DWELL : 1)));   // dwell on last frame
   }
   rec.stop();
   await done;
@@ -2622,7 +2631,8 @@ async function exportZV(kind, w, h){
   for (let i=0; i<nmax; i++){
     exToast('Recording frame '+(i+1)+'/'+nmax+'\\u2026', true);
     await compose(i);
-    await new Promise(r=>setTimeout(r, 450));
+    await new Promise(r=>setTimeout(r,
+      FRAME_MS * (i === nmax-1 ? END_DWELL : 1)));   // dwell on last frame
   }
   rec.stop();
   await done;
@@ -2731,7 +2741,8 @@ async function exportMedia(kind, w, h){
   for (let i=0; i<n; i++){
     exToast('Recording frame '+(i+1)+'/'+n+'\\u2026', true);
     await compose(i);
-    await new Promise(r=>setTimeout(r, 450));
+    await new Promise(r=>setTimeout(r,
+      FRAME_MS * (i === n-1 ? END_DWELL : 1)));   // dwell on last frame
   }
   rec.stop();
   await done;
