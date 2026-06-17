@@ -49,6 +49,26 @@ import numpy as np
 import pyart
 import xradar as xd
 from PIL import Image
+
+# Fast Rust dealiaser (region_dealias) when available; identical to pyart's
+# region-based algorithm. Falls back to pyart if it's not installed or the
+# call hits an unsupported path (e.g. ref_vel_field). See
+# github.com/swnesbitt/region-dealias
+try:
+    import region_dealias as _region_dealias  # noqa: F401
+    _HAVE_REGION_DEALIAS = True
+except Exception:
+    _HAVE_REGION_DEALIAS = False
+
+
+def _dealias_region_based(radar, **kwargs):
+    """region_dealias when present, else pyart; pyart fallback on NotImplemented."""
+    if _HAVE_REGION_DEALIAS:
+        try:
+            return _region_dealias.dealias_region_based(radar, **kwargs)
+        except NotImplementedError:
+            pass
+    return pyart.correct.dealias_region_based(radar, **kwargs)
 from xradar.io.backends import nexrad_level2 as _nx2
 
 # --- patch: the last LDM record's size field is negative (signed) by spec;
@@ -349,7 +369,7 @@ def dealias_volume_file(path, vol_label):
         pass
     try:
         sub = radar.extract_sweeps(cands)
-        corr = pyart.correct.dealias_region_based(
+        corr = _dealias_region_based(
             sub, vel_field="velocity", keep_original=False)
         sub.fields["velocity"]["data"] = corr["data"]
         polar_frame._vol = vol_label
@@ -821,7 +841,7 @@ def dealias_volume(bucket, key, dest_dir):
         pass
     try:
         sub = radar.extract_sweeps(cands)
-        corr = pyart.correct.dealias_region_based(
+        corr = _dealias_region_based(
             sub, vel_field="velocity", keep_original=False)
         sub.fields["velocity"]["data"] = corr["data"]
         polar_frame._vol = os.path.basename(key)

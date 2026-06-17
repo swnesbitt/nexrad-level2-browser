@@ -2,6 +2,7 @@ arm-pyart>=1.19
 xradar @ git+https://github.com/swnesbitt/xradar
 cmweather
 cmasher
+# region-dealias   # fast Rust dealiaser — uncomment once published to PyPI
 matplotlib
 numpy
 pillow
