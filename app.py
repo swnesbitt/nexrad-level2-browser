@@ -3622,7 +3622,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                            elem_id="mode-sw")
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
                               allow_custom_value=True, scale=2, min_width=150)
-        field_dd = gr.Dropdown(list(FIELDS) + [QUAD], value="Reflectivity",
+        field_dd = gr.Dropdown(list(FIELDS) + [QUAD, ZVF], value="Reflectivity",
                                label="Field", scale=2, min_width=140)
         year_dd = gr.Dropdown(YEARS, value="2023", label="Year (UTC)",
                               scale=1, min_width=84)
