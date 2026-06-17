@@ -421,11 +421,19 @@ def _warn_poller():
         time_mod.sleep(60)
 
 
+# small static assets that live in VOL_CACHE_DIR but must never be LRU-pruned
+# (cities.json is copied once at startup and never re-touched, so without this
+# guard it sorts oldest and gets evicted as radar volumes fill the 2 GiB cap)
+_CACHE_KEEP = {"cities.json", "warnings.json"}
+
+
 def _prune_vol_cache():
     try:
         files = [(os.path.getmtime(p), os.path.getsize(p), p)
                  for p in (os.path.join(VOL_CACHE_DIR, f)
-                           for f in os.listdir(VOL_CACHE_DIR))]
+                           for f in os.listdir(VOL_CACHE_DIR))
+                 if os.path.basename(p) not in _CACHE_KEEP
+                 and os.path.isfile(p)]
         files.sort(reverse=True)
         total = 0
         for mt, sz, p in files:
