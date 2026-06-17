@@ -42,6 +42,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import cmweather  # noqa: F401  (registers ChaseSpectral & friends)
+import cmasher    # noqa: F401  (registers cmr.* colormaps, e.g. cmr.fusion_r)
 import gradio as gr
 import matplotlib.pyplot as plt
 import numpy as np
@@ -129,7 +130,7 @@ FIELDS = {
         units="dBZ", label="Horizontal reflectivity factor", tick=10,
     ),
     "Radial velocity": dict(
-        pyart="velocity", cmap="balance", vmin=-40, vmax=40,
+        pyart="velocity", cmap="cmr.fusion_r", vmin=-40, vmax=40,
         units="m/s", label="Radial velocity", tick=10,
     ),
     "Differential reflectivity": dict(
@@ -144,7 +145,7 @@ FIELDS = {
 
 DEALIAS_NAME = "Radial velocity (dealiased)"
 DEALIAS_CFG = dict(
-    pyart="velocity", cmap="balance", vmin=-64, vmax=64,
+    pyart="velocity", cmap="cmr.fusion_r", vmin=-64, vmax=64,
     units="m/s", label="Dealiased radial velocity", tick=16,
 )
 
@@ -3565,6 +3566,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         "· radar processing by [Py-ART](https://arm-doe.github.io/pyart/) "
         "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
         "· colormaps from [cmweather](https://github.com/openradar/cmweather) "
+        "and [CMasher](https://cmasher.readthedocs.io) "
         "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
         "· [Source code on GitHub](https://github.com/swnesbitt/nexrad-level2-browser)."
     )
