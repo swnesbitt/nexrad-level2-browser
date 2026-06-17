@@ -1841,6 +1841,15 @@ document.getElementById('share').addEventListener('click', ()=>{
     '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + '&zoom=' + z;
   const ckd = document.getElementById('ck-dealias');
   if (ckd && ckd.checked) url += '&dealias=1';
+  // SHARE_BASE is a bare query (?...) when the server didn't know the Space
+  // host (always so in live mode) — prepend the app's origin+path so the
+  // copied link is a full, openable URL
+  if (!/^https?:/i.test(url)){
+    let base = '';
+    try { base = parent.location.origin + parent.location.pathname; }
+    catch (e) { base = location.origin + location.pathname; }
+    url = base + url;
+  }
   const done=()=>{const t=document.getElementById('toast');
     t.style.display='block'; setTimeout(()=>t.style.display='none',1600);};
   if(navigator.clipboard&&navigator.clipboard.writeText)
