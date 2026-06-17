@@ -1936,6 +1936,9 @@ function applyDeal(on){
     } else {
       exToast('Reprocessing hour with region-based dealiasing\\u2026', true);
       try {
+        // adding the dealiased field rebuilds the iframe; hand the current
+        // frame to the new bundle (via the shared parent) so it doesn't reset
+        parent.__restoreIdx = idx;
         const host = parent.document.getElementById('dax-trigger');
         (host.querySelector('button') || host).click();
       } catch (err) {
@@ -2853,8 +2856,16 @@ EXMENU.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{
 panels.forEach((p,pi)=>p.fd.frames.forEach((_,i)=>
   setTimeout(()=>p.texFor(i,()=>{}),
              80*(RT ? p.fd.frames.length-1-i : i)+20*pi)));
-// live view opens on the newest frame; archive starts at the top of the hour
-show(RT ? nmax-1 : 0);
+// live view opens on the newest frame; archive starts at the top of the hour —
+// unless we just rebuilt for a dealias toggle, then restore the prior frame
+let _startIdx = RT ? nmax-1 : 0;
+try {
+  if (parent && typeof parent.__restoreIdx === 'number'){
+    _startIdx = Math.min(Math.max(parent.__restoreIdx, 0), nmax-1);
+    parent.__restoreIdx = undefined;
+  }
+} catch (e) {}
+show(_startIdx);
 </script></body></html>"""
 
 
