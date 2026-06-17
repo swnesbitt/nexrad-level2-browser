@@ -393,19 +393,36 @@ def _fetch_warnings():
     rdr = _pyshp.Reader(shp=io.BytesIO(z.read(base + ".shp")),
                         dbf=io.BytesIO(z.read(base + ".dbf")),
                         shx=io.BytesIO(z.read(base + ".shx")))
+    now = dt.datetime.utcnow()
     feats = []
     for sr in rdr.iterShapeRecords():
         d = sr.record.as_dict()
-        if (d.get("SIG") == "W" and d.get("PHENOM") in ("TO", "SV")
+        if not (d.get("SIG") == "W" and d.get("PHENOM") in ("TO", "SV")
                 and d.get("GTYPE") == "P"):
-            feats.append(dict(
-                type="Feature",
-                properties=dict(ph=d.get("PHENOM"), wfo=d.get("WFO"),
-                                etn=d.get("ETN"), exp=d.get("EXPIRED")),
-                geometry=sr.shape.__geo_interface__))
+            continue
+        # drop warnings already past their expiration (UTC YYYYMMDDHHMM) so
+        # they vanish from the loop instead of lingering until IEM republishes
+        exp = str(d.get("EXPIRED") or "")
+        try:
+            if len(exp) >= 12 and \
+                    dt.datetime.strptime(exp[:12], "%Y%m%d%H%M") <= now:
+                continue
+        except Exception:
+            pass
+        feats.append(dict(
+            type="Feature",
+            properties=dict(ph=d.get("PHENOM"), wfo=d.get("WFO"),
+                            etn=d.get("ETN"), exp=exp),
+            geometry=sr.shape.__geo_interface__))
+    feats.sort(key=lambda f: (str(f["properties"]["wfo"] or ""),
+                              f["properties"]["etn"] or 0))
+    # etag from the (expiry-filtered) content, NOT the raw zip — so the client
+    # redraws and clears a warning the moment it drops out of the valid set
+    etag = hashlib.md5(
+        json.dumps(feats, sort_keys=True).encode()).hexdigest()[:12]
     out = dict(type="FeatureCollection",
-               etag=hashlib.md5(buf).hexdigest()[:12],
-               updated=dt.datetime.utcnow().isoformat() + "Z",
+               etag=etag,
+               updated=now.isoformat() + "Z",
                features=feats)
     tmp = WARN_JSON + ".part"
     with open(tmp, "w") as f:
@@ -1885,8 +1902,15 @@ if (RT){
       if (j.etag === warnTag) return;
       warnTag = j.etag;
       warnLayers.forEach(l=>l.remove());
+      // backup guard: hide any warning already past its UTC expiry
+      // (YYYYMMDDHHMM, fixed-width so string compare is safe)
+      const nd = new Date(), pad = n => String(n).padStart(2, '0');
+      const nowZ = '' + nd.getUTCFullYear() + pad(nd.getUTCMonth()+1) +
+        pad(nd.getUTCDate()) + pad(nd.getUTCHours()) + pad(nd.getUTCMinutes());
       warnLayers = panels.map(p=>{
-        const lyr = L.geoJSON(j, {pane: 'warnpane', style: f=>({
+        const lyr = L.geoJSON(j, {pane: 'warnpane',
+          filter: f=> !f.properties.exp || f.properties.exp > nowZ,
+          style: f=>({
           color: f.properties.ph === 'TO' ? '#FF2A2A' : '#FFE12A',
           weight: 2.5, opacity: 1, fill: false})});
         lyr.addTo(p.map);
