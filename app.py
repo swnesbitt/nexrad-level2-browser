@@ -2956,7 +2956,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 210px);'
+            f'style="width:100%;height:calc(100vh - 188px);'
             f'min-height:480px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
@@ -3508,8 +3508,14 @@ ILLINI_THEME = gr.themes.Default(
 ILLINI_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Source+Sans+3:wght@400;600;700&display=swap');
 .gradio-container { background: #13294B !important; max-width: 100% !important;
-  padding: 5px 12px 2px !important;
+  padding: 2px !important;
   font-family: 'Source Sans 3','Source Sans Pro',system-ui,Arial,sans-serif !important; }
+/* collapse all inter-element spacing so the map gets the window */
+.gradio-container .main, .gradio-container .main > .wrap,
+.gradio-container .main > div { gap: 2px !important; }
+.gradio-container .gap { gap: 2px !important; }
+.gradio-container .html-container { padding: 0 !important; margin: 0 !important; }
+.gradio-container .block { margin: 0 !important; }
 .gradio-container h1 { font-family: 'Montserrat','Arial Black',sans-serif !important;
   font-weight: 800 !important; text-transform: uppercase; letter-spacing: .06em;
   font-size: 17px !important; margin: 0 !important;
@@ -3519,9 +3525,9 @@ ILLINI_CSS = """
 .gradio-container .prose, .gradio-container .prose p { color: #C8C6C7 !important;
   font-size: 13px !important; }
 .gradio-container .prose p { margin: 2px 0 !important; }
-.gradio-container .block { padding: 3px 8px !important; }
-.gradio-container .form { gap: 3px !important; }
-.gradio-container .gap, .gradio-container .gradio-row { gap: 5px !important; }
+.gradio-container .block { padding: 2px 6px !important; }
+.gradio-container .form { gap: 2px !important; }
+.gradio-container .gap, .gradio-container .gradio-row { gap: 3px !important; }
 /* compact one-row control strip */
 #ctrl-row { flex-wrap: nowrap !important; }
 .gradio-container .block > label,
@@ -3648,7 +3654,7 @@ addEventListener('DOMContentLoaded', function () {{
       if (pinH === null) {{
         // leave room for the compact header + control row + footer so the
         // map fills the granted viewport with minimal dead space
-        pinH = Math.max(480, window.innerHeight - 210);
+        pinH = Math.max(480, window.innerHeight - 188);
       }}
       f.style.height = pinH + 'px';
     }}
