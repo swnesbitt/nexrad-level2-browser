@@ -3689,8 +3689,11 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                            elem_id="mode-sw")
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
                               allow_custom_value=True, scale=2, min_width=150)
+        # field is chosen via the in-map selector (Z/V/ZDR/CC/Z+V/2×2); this
+        # dropdown is kept hidden so handlers + share-link round-trips still work
         field_dd = gr.Dropdown(list(FIELDS) + [QUAD, ZVF], value="Reflectivity",
-                               label="Field", scale=2, min_width=140)
+                               label="Field", scale=2, min_width=140,
+                               visible=False)
         year_dd = gr.Dropdown(YEARS, value="2023", label="Year (UTC)",
                               scale=1, min_width=84)
         month_dd = gr.Dropdown(MONTHS, value="06", label="Month (UTC)",
