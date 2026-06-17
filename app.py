@@ -1960,14 +1960,19 @@ if (RT){
       const nd = new Date(), pad = n => String(n).padStart(2, '0');
       const nowZ = '' + nd.getUTCFullYear() + pad(nd.getUTCMonth()+1) +
         pad(nd.getUTCDate()) + pad(nd.getUTCHours()) + pad(nd.getUTCMinutes());
-      warnLayers = panels.map(p=>{
-        const lyr = L.geoJSON(j, {pane: 'warnpane',
-          filter: f=> !f.properties.exp || f.properties.exp > nowZ,
-          style: f=>({
-          color: f.properties.ph === 'TO' ? '#FF2A2A' : '#FFE12A',
-          weight: 2.5, opacity: 1, fill: false})});
-        lyr.addTo(p.map);
-        return lyr;
+      const WARN_W = 2.5, WARN_BUF = 0.25 * (96/72);   // 0.25pt black buffer
+      const keep = f=> !f.properties.exp || f.properties.exp > nowZ;
+      warnLayers = [];
+      panels.forEach(p=>{
+        // black casing first (drawn under), colored warning line on top
+        const casing = L.geoJSON(j, {pane: 'warnpane', filter: keep,
+          style: ()=>({color:'#000', weight: WARN_W + 2*WARN_BUF,
+                       opacity: 1, fill: false})});
+        const line = L.geoJSON(j, {pane: 'warnpane', filter: keep,
+          style: f=>({color: f.properties.ph === 'TO' ? '#FF2A2A' : '#FFE12A',
+                      weight: WARN_W, opacity: 1, fill: false})});
+        casing.addTo(p.map); line.addTo(p.map);
+        warnLayers.push(casing, line);
       });
     } catch (err) {}
   }
@@ -2088,26 +2093,36 @@ function drawWarningsExport(ctx, win, w){
   const nowZ = '' + nd.getUTCFullYear() + pad(nd.getUTCMonth()+1) +
     pad(nd.getUTCDate()) + pad(nd.getUTCHours()) + pad(nd.getUTCMinutes());
   const mpp = (win.x1-win.x0)/w;
+  const colorW = Math.max(2, w/500);    // bold so it reads on 4K stills/movies
+  const buf = 0.25 * (96/72) * (w/900); // 0.25pt black buffer, scaled to export
   ctx.save();
-  ctx.lineWidth = Math.max(2, w/500);   // bold so it reads on 4K stills/movies
   ctx.lineJoin = 'round';
-  const drawRing = ring=>{
+  const ringPath = ring=>{
     ctx.beginPath();
     ring.forEach((pt,i)=>{
       const x = (mercX(pt[0])-win.x0)/mpp, y = (win.y1-mercY(pt[1]))/mpp;
       if (i) ctx.lineTo(x,y); else ctx.moveTo(x,y);
     });
-    ctx.closePath(); ctx.stroke();
+    ctx.closePath();
   };
-  gj.features.forEach(f=>{
+  const strokeGeom = g=>{
+    if (g.type === 'Polygon') g.coordinates.forEach(r=>{ ringPath(r); ctx.stroke(); });
+    else if (g.type === 'MultiPolygon')
+      g.coordinates.forEach(p=>p.forEach(r=>{ ringPath(r); ctx.stroke(); }));
+  };
+  const each = cb=>gj.features.forEach(f=>{
     const pr = f.properties || {};
     if (pr.exp && pr.exp <= nowZ) return;
     const g = f.geometry; if (!g) return;
-    ctx.strokeStyle = pr.ph === 'TO' ? '#FF2A2A' : '#FFE12A';
-    if (g.type === 'Polygon') g.coordinates.forEach(drawRing);
-    else if (g.type === 'MultiPolygon')
-      g.coordinates.forEach(p=>p.forEach(drawRing));
+    cb(pr, g);
   });
+  // pass 1: black casing (0.25pt buffer outside the colored stroke)
+  ctx.strokeStyle = '#000'; ctx.lineWidth = colorW + 2*buf;
+  each((pr, g)=>strokeGeom(g));
+  // pass 2: colored warning line on top
+  ctx.lineWidth = colorW;
+  each((pr, g)=>{ ctx.strokeStyle = pr.ph === 'TO' ? '#FF2A2A' : '#FFE12A';
+                  strokeGeom(g); });
   ctx.restore();
 }
 
