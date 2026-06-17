@@ -2956,7 +2956,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 205px);'
+            f'style="width:100%;height:calc(100vh - 210px);'
             f'min-height:480px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
@@ -3508,13 +3508,13 @@ ILLINI_THEME = gr.themes.Default(
 ILLINI_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Source+Sans+3:wght@400;600;700&display=swap');
 .gradio-container { background: #13294B !important; max-width: 100% !important;
-  padding: 10px 18px 4px !important;
+  padding: 5px 12px 2px !important;
   font-family: 'Source Sans 3','Source Sans Pro',system-ui,Arial,sans-serif !important; }
 .gradio-container h1 { font-family: 'Montserrat','Arial Black',sans-serif !important;
   font-weight: 800 !important; text-transform: uppercase; letter-spacing: .06em;
-  font-size: 20px !important; margin: 0 !important;
+  font-size: 17px !important; margin: 0 !important;
   color: #fff !important; border-bottom: 3px solid #FF5F05;
-  padding-bottom: 4px; display: inline-block; }
+  padding-bottom: 2px; display: inline-block; }
 .gradio-container .prose a { color: #FF8136 !important; }
 .gradio-container .prose, .gradio-container .prose p { color: #C8C6C7 !important;
   font-size: 13px !important; }
@@ -3557,11 +3557,11 @@ if os.path.exists(os.path.join(os.path.dirname(__file__), "logo.png")):
         open(os.path.join(os.path.dirname(__file__), "logo.png"), "rb").read()
     ).decode()
     LOGO_HTML = (f'<img src="data:image/png;base64,{_b64}" alt="CliMAS" '
-                 f'style="width:64px;height:64px;border-radius:14px;flex:none"/>')
+                 f'style="width:46px;height:46px;border-radius:10px;flex:none"/>')
 else:
     LOGO_HTML = """
-<svg viewBox="0 0 400 400" width="64" height="64"
-     style="border-radius:14px;flex:none" aria-label="CliMAS">
+<svg viewBox="0 0 400 400" width="46" height="46"
+     style="border-radius:10px;flex:none" aria-label="CliMAS">
   <circle cx="200" cy="200" r="200" fill="#13294B"/>
   <path d="M150 70 h100 v42 h-26 v76 h26 v42 h-100 v-42 h26 v-76 h-26 z"
         fill="#FF5F05" stroke="#fff" stroke-width="10"/>
@@ -3576,11 +3576,11 @@ else:
 </svg>"""
 
 HEADER_HTML = f"""
-<div style="display:flex;align-items:center;gap:14px">
+<div style="display:flex;align-items:center;gap:10px">
   {LOGO_HTML}
   <div>
     <h1>NEXRAD Level 2 — 0.5° sweep browser</h1>
-    <p style="color:#C8C6C7;font-size:13px;margin:2px 0">
+    <p style="color:#C8C6C7;font-size:12px;margin:1px 0">
       Brought to you by the
       <a href="https://climas.illinois.edu" target="_blank"
          style="color:#FF8136">Department of Climate, Meteorology &amp;
@@ -3646,9 +3646,9 @@ addEventListener('DOMContentLoaded', function () {{
       if (f.dataset.hpin) continue;
       f.dataset.hpin = '1';
       if (pinH === null) {{
-        // leave room for controls (~205px) + footer (~100px) so the
-        // app's content fits the viewport the host granted
-        pinH = Math.max(480, window.innerHeight - 305);
+        // leave room for the compact header + control row + footer so the
+        // map fills the granted viewport with minimal dead space
+        pinH = Math.max(480, window.innerHeight - 210);
       }}
       f.style.height = pinH + 'px';
     }}
