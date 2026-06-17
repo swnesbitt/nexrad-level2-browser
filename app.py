@@ -1331,6 +1331,9 @@ QUAD_PAGE = """<!DOCTYPE html>
         padding:4px 12px;cursor:pointer;font-size:13px;
         font-family:'Montserrat',sans-serif;font-weight:700}
  button:hover{background:#E25504}
+ #refresh{font-size:16px;line-height:1;padding:4px 9px}
+ #refresh.busy{animation:spin .8s linear infinite;pointer-events:none;opacity:.7}
+ @keyframes spin{to{transform:rotate(360deg)}}
  #share{position:absolute;top:116px;left:10px;z-index:1100;width:34px;
         height:34px;display:flex;align-items:center;justify-content:center;
         cursor:pointer;background:var(--ib2);color:#fff;
@@ -1419,6 +1422,8 @@ QUAD_PAGE = """<!DOCTYPE html>
 <div id="bar">
  <div id="row1">
    <button id="play">&#9654;</button>
+   <button id="refresh" title="Refresh now: load new scans + warnings"
+           style="display:none">&#x21bb;</button>
    <span id="modes"></span>
    <input id="slider" type="range" min="0" max="0" value="0" step="1"/>
    <label class="ck"><input type="checkbox" id="ck-counties" checked/><span>Counties</span></label>
@@ -1986,6 +1991,32 @@ if (RT){
   }
   pollWarnings();
   setInterval(pollWarnings, 60 * 1000);
+
+  // forced-refresh button: warnings update instantly; ask the server to
+  // re-decode the live hour now (picks up any new scans), then fast-poll the
+  // frame set until it lands — all in place, no iframe reload
+  const refreshBtn = document.getElementById('refresh');
+  if (refreshBtn){
+    refreshBtn.style.display = '';
+    let refreshing = false;
+    refreshBtn.addEventListener('click', async ()=>{
+      if (refreshing) return;
+      refreshing = true; refreshBtn.classList.add('busy');
+      pollWarnings();
+      try {
+        const h = parent.document.getElementById('rt-force');
+        (h.querySelector('button') || h).click();
+      } catch (err) {}
+      const before = liveTag, t0 = Date.now();
+      while (Date.now() - t0 < 12000){
+        await new Promise(r=>setTimeout(r, 600));
+        await pollLive();
+        if (liveTag !== before) break;
+      }
+      pollWarnings();
+      refreshBtn.classList.remove('busy'); refreshing = false;
+    });
+  }
 }
 
 // ---------------------------------------------------------------- export
@@ -3437,7 +3468,7 @@ ILLINI_CSS = """
 #ctrl-row .block:has(input:disabled) input { cursor: not-allowed !important; }
 @media (max-width: 900px) { #ctrl-row { flex-wrap: wrap !important; } }
 footer { display: none !important; }
-#dax-trigger, #rt-refresh { display: none !important; }
+#dax-trigger, #rt-refresh, #rt-force { display: none !important; }
 @media (max-width: 700px) {
   .gradio-container { padding: 8px 10px 4px !important; }
   .gradio-container h1 { font-size: 15px !important; }
@@ -3592,6 +3623,9 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
                             size="sm")
             # hidden: the live page clicks this every 5 minutes
             rtr = gr.Button("Refresh live", elem_id="rt-refresh", size="sm")
+            # hidden: the in-map refresh button clicks this to force a live
+            # re-decode now (picks up new scans) without reloading the iframe
+            frr = gr.Button("Force live", elem_id="rt-force", size="sm")
     status = gr.Markdown()
     map_html = gr.HTML()
 
@@ -3673,6 +3707,23 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
 
     rt_timer.tick(rt_tick, [mode_sw, site_tb, field_dd, deal_st],
                   [status, map_html], show_progress="hidden")
+
+    def force_refresh(mode, site, field, deal, progress=gr.Progress()):
+        # user hit the in-map refresh: drop the short-lived RT cache so we
+        # re-check the feed for new scans now, rewrite live_<site>.json, and
+        # return nothing (the in-page poller merges the result — no reload)
+        if mode != "Live":
+            return gr.skip()
+        try:
+            _RT_CACHE.pop(site, None)
+            browse(site, "Radial velocity" if deal else field, "", "", "", "",
+                   progress=progress, realtime=True, want_deal=deal)
+        except Exception:
+            pass
+        return gr.skip()
+
+    frr.click(force_refresh, [mode_sw, site_tb, field_dd, deal_st], [status],
+              show_progress="hidden")
     gr.Markdown(
         "Level 2 decoding by [xradar](https://github.com/swnesbitt/xradar) "
         "(openradar; S. Nesbitt fork) "
