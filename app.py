@@ -1921,6 +1921,13 @@ if (RT){
   // sidecar; only when it changes do we fetch the full frame set and swap
   // each panel's data via setData, preserving pan/zoom/playback/mode.
   let liveTag = __LIVETAG0__;
+  async function fetchTag(){
+    try {
+      const r = await fetch(LIVE_TAG_URL + '?t=' + Date.now(), {cache:'no-store'});
+      if (r.ok) return await r.json();   // {etag, ts}
+    } catch (err) {}
+    return null;
+  }
   function applyLive(j){
     if (!j || !j.fields) return;
     const byName = {};
@@ -1943,17 +1950,15 @@ if (RT){
     else { if (idx>=0) refreshLabel(idx); panels.forEach(p=>p.requestDraw()); }
   }
   async function pollLive(){
+    const t = await fetchTag();
+    if (!t || t.etag === liveTag) return false;
     try {
-      const r = await fetch(LIVE_TAG_URL + '?t=' + Date.now(),
-                            {cache:'no-store'});
-      if (!r.ok) return;
-      const t = await r.json();
-      if (!t || t.etag === liveTag) return;
       const r2 = await fetch(LIVE_URL + '?t=' + Date.now(), {cache:'no-store'});
-      if (!r2.ok) return;
+      if (!r2.ok) return false;
       const j = await r2.json();
-      if (j && j.etag){ liveTag = j.etag; applyLive(j); }
+      if (j && j.etag){ liveTag = j.etag; applyLive(j); return true; }
     } catch (err) {}
+    return false;
   }
   setInterval(pollLive, 30 * 1000);
   // poll current TOR/SVR warnings every minute; redraw on change
@@ -2003,15 +2008,19 @@ if (RT){
       if (refreshing) return;
       refreshing = true; refreshBtn.classList.add('busy');
       pollWarnings();
+      const base = await fetchTag();
+      const baseTs = base && base.ts ? base.ts : 0;
       try {
         const h = parent.document.getElementById('rt-force');
         (h.querySelector('button') || h).click();
       } catch (err) {}
-      const before = liveTag, t0 = Date.now();
-      while (Date.now() - t0 < 12000){
-        await new Promise(r=>setTimeout(r, 600));
-        await pollLive();
-        if (liveTag !== before) break;
+      const t0 = Date.now();
+      while (Date.now() - t0 < 15000){
+        await new Promise(r=>setTimeout(r, 500));
+        const t = await fetchTag();
+        if (!t) continue;
+        if (t.etag !== liveTag){ await pollLive(); break; }   // new scans merged
+        if (baseTs && t.ts && t.ts > baseTs) break;           // server done, no change
       }
       pollWarnings();
       refreshBtn.classList.remove('busy'); refreshing = false;
@@ -2849,9 +2858,10 @@ def _write_live(site, by_field):
     try:
         data = _bundle_data(by_field)
         etag = _live_sig(data)
+        ts = time_mod.time()   # bumps every compute, even when etag is unchanged
         big, tag = _live_paths(site)
-        for path, payload in ((big, dict(etag=etag, fields=data)),
-                              (tag, dict(etag=etag))):
+        for path, payload in ((big, dict(etag=etag, ts=ts, fields=data)),
+                              (tag, dict(etag=etag, ts=ts))):
             tmp = path + ".part"
             with open(tmp, "w") as f:
                 json.dump(payload, f)
