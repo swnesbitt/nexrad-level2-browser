@@ -3752,35 +3752,35 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     rt_timer = gr.Timer(120)
 
     def rt_tick(mode, site, field, deal, progress=gr.Progress()):
-        if mode != "Live":
-            return gr.skip(), gr.skip()
-        # refresh the live frame file for the in-page poller; do NOT replace
-        # the iframe — the client merges new frames in place (no grey-out)
-        try:
-            browse(site, "Radial velocity" if deal else field, "", "", "", "",
-                   progress=progress, realtime=True, want_deal=deal)
-        except Exception:
-            pass
-        return gr.skip(), gr.skip()
+        # Only refresh the live frame file; the in-page poller merges the new
+        # frames in place when ready. Crucially this has NO Gradio outputs, so
+        # the display is never marked "generating"/greyed during an autoupdate.
+        if mode == "Live":
+            try:
+                browse(site, "Radial velocity" if deal else field,
+                       "", "", "", "", progress=progress,
+                       realtime=True, want_deal=deal)
+            except Exception:
+                pass
 
     rt_timer.tick(rt_tick, [mode_sw, site_tb, field_dd, deal_st],
-                  [status, map_html], show_progress="hidden")
+                  None, show_progress="hidden")
 
     def force_refresh(mode, site, field, deal, progress=gr.Progress()):
         # user hit the in-map refresh: drop the short-lived RT cache so we
-        # re-check the feed for new scans now, rewrite live_<site>.json, and
-        # return nothing (the in-page poller merges the result — no reload)
-        if mode != "Live":
-            return gr.skip()
-        try:
-            _RT_CACHE.pop(site, None)
-            browse(site, "Radial velocity" if deal else field, "", "", "", "",
-                   progress=progress, realtime=True, want_deal=deal)
-        except Exception:
-            pass
-        return gr.skip()
+        # re-check the feed for new scans now and rewrite live_<site>.json.
+        # NO Gradio outputs -> the display is never greyed; the in-page poller
+        # (with its own spinning icon) merges the result when ready.
+        if mode == "Live":
+            try:
+                _RT_CACHE.pop(site, None)
+                browse(site, "Radial velocity" if deal else field,
+                       "", "", "", "", progress=progress,
+                       realtime=True, want_deal=deal)
+            except Exception:
+                pass
 
-    frr.click(force_refresh, [mode_sw, site_tb, field_dd, deal_st], [status],
+    frr.click(force_refresh, [mode_sw, site_tb, field_dd, deal_st], None,
               show_progress="hidden")
     gr.Markdown(
         "Level 2 decoding by [xradar](https://github.com/swnesbitt/xradar) "
