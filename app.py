@@ -1901,6 +1901,7 @@ if (RT){
       const j = await r.json();
       if (j.etag === warnTag) return;
       warnTag = j.etag;
+      window.WARN_GJ = j;          // stash for the export compositor
       warnLayers.forEach(l=>l.remove());
       // backup guard: hide any warning already past its UTC expiry
       // (YYYYMMDDHHMM, fixed-width so string compare is safe)
@@ -2020,6 +2021,37 @@ function drawCounties(ctx, win, w){
   };
   countyGJ.features.forEach(f=>{
     const g = f.geometry; if (!g) return;
+    if (g.type === 'Polygon') g.coordinates.forEach(drawRing);
+    else if (g.type === 'MultiPolygon')
+      g.coordinates.forEach(p=>p.forEach(drawRing));
+  });
+  ctx.restore();
+}
+
+function drawWarningsExport(ctx, win, w){
+  const gj = window.WARN_GJ;
+  if (!gj || !gj.features || !gj.features.length) return;
+  // drop any warning already past its UTC expiry (YYYYMMDDHHMM string compare)
+  const nd = new Date(), pad = n => String(n).padStart(2, '0');
+  const nowZ = '' + nd.getUTCFullYear() + pad(nd.getUTCMonth()+1) +
+    pad(nd.getUTCDate()) + pad(nd.getUTCHours()) + pad(nd.getUTCMinutes());
+  const mpp = (win.x1-win.x0)/w;
+  ctx.save();
+  ctx.lineWidth = Math.max(2, w/500);   // bold so it reads on 4K stills/movies
+  ctx.lineJoin = 'round';
+  const drawRing = ring=>{
+    ctx.beginPath();
+    ring.forEach((pt,i)=>{
+      const x = (mercX(pt[0])-win.x0)/mpp, y = (win.y1-mercY(pt[1]))/mpp;
+      if (i) ctx.lineTo(x,y); else ctx.moveTo(x,y);
+    });
+    ctx.closePath(); ctx.stroke();
+  };
+  gj.features.forEach(f=>{
+    const pr = f.properties || {};
+    if (pr.exp && pr.exp <= nowZ) return;
+    const g = f.geometry; if (!g) return;
+    ctx.strokeStyle = pr.ph === 'TO' ? '#FF2A2A' : '#FFE12A';
     if (g.type === 'Polygon') g.coordinates.forEach(drawRing);
     else if (g.type === 'MultiPolygon')
       g.coordinates.forEach(p=>p.forEach(drawRing));
@@ -2241,6 +2273,7 @@ async function exportQuad(kind, w, h){
   if (document.getElementById('ck-counties').checked)
     drawCounties(refs.getContext('2d'), win, qw);
   drawCitiesExport(refs.getContext('2d'), win, qw, qh);
+  drawWarningsExport(refs.getContext('2d'), win, qw);
 
   const xgls = panels.map(p=>p.fd.frames.length
     ? makeExportGL(qw, qh, p.fd.cbar) : null);
@@ -2333,7 +2366,10 @@ async function exportQuad(kind, w, h){
                     exToast('Image saved'); }, 'image/png');
     return;
   }
-  const mime = ['video/mp4;codecs=avc1.640028','video/mp4',
+  // prefer High-profile H.264 at a level that actually supports the output
+  // size (4.0 tops out below 4K; 5.2 covers 3840x2160), then fall back
+  const mime = ['video/mp4;codecs=avc1.640034','video/mp4;codecs=avc1.640033',
+                'video/mp4;codecs=avc1.640028','video/mp4',
                 'video/webm;codecs=vp9','video/webm']
     .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   if (!mime){ exToast('Video recording unsupported in this browser'); return; }
@@ -2343,8 +2379,9 @@ async function exportQuad(kind, w, h){
     if (xgls[q]) await xgls[q].preload(panels[q].fd.frames);
   await compose(0);
   const stream = out.captureStream(30);
+  // maximum quality: ~0.5 bits/pixel @30fps (4K ~120 Mbps, reel ~31 Mbps)
   const rec = new MediaRecorder(stream,
-    {mimeType:mime, videoBitsPerSecond: w>2000 ? 32e6 : 16e6});
+    {mimeType:mime, videoBitsPerSecond: Math.round(w*h*30*0.5)});
   const chunks = [];
   rec.ondataavailable = e=>{ if (e.data.size) chunks.push(e.data); };
   const done = new Promise(res=>{ rec.onstop = res; });
@@ -2389,6 +2426,7 @@ async function exportMedia(kind, w, h){
   if (document.getElementById('ck-counties').checked)
     drawCounties(refs.getContext('2d'), win, w);
   drawCitiesExport(refs.getContext('2d'), win, w, h);
+  drawWarningsExport(refs.getContext('2d'), win, w);
 
   const xgl = makeExportGL(w, h, fd.cbar);
   // double buffer: compose on `work`, blit complete frames to `out` —
@@ -2436,7 +2474,10 @@ async function exportMedia(kind, w, h){
     return;
   }
   // loop -> movie via MediaRecorder; pre-decode every radar texture first
-  const mime = ['video/mp4;codecs=avc1.640028','video/mp4',
+  // prefer High-profile H.264 at a level that actually supports the output
+  // size (4.0 tops out below 4K; 5.2 covers 3840x2160), then fall back
+  const mime = ['video/mp4;codecs=avc1.640034','video/mp4;codecs=avc1.640033',
+                'video/mp4;codecs=avc1.640028','video/mp4',
                 'video/webm;codecs=vp9','video/webm']
     .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m));
   if (!mime){ exToast('Video recording unsupported in this browser'); return; }
@@ -2445,8 +2486,9 @@ async function exportMedia(kind, w, h){
   await xgl.preload(fd.frames);
   await compose(0);                       // first full frame before recording
   const stream = out.captureStream(30);
+  // maximum quality: ~0.5 bits/pixel @30fps (4K ~120 Mbps, reel ~31 Mbps)
   const rec = new MediaRecorder(stream,
-    {mimeType:mime, videoBitsPerSecond: w>2000 ? 32e6 : 16e6});
+    {mimeType:mime, videoBitsPerSecond: Math.round(w*h*30*0.5)});
   const chunks = [];
   rec.ondataavailable = e=>{ if (e.data.size) chunks.push(e.data); };
   const done = new Promise(res=>{ rec.onstop = res; });
