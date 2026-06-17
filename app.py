@@ -424,7 +424,9 @@ def _fetch_warnings():
     feats = []
     for sr in rdr.iterShapeRecords():
         d = sr.record.as_dict()
-        if not (d.get("SIG") == "W" and d.get("PHENOM") in ("TO", "SV")
+        # TO = tornado, SV = severe t'storm, FF = flash flood — all storm-based
+        # polygon warnings (GTYPE=P). (Flood Warning FL.W is county-based.)
+        if not (d.get("SIG") == "W" and d.get("PHENOM") in ("TO", "SV", "FF")
                 and d.get("GTYPE") == "P"):
             continue
         # drop warnings already past their expiration (UTC YYYYMMDDHHMM) so
@@ -2023,7 +2025,7 @@ if (RT){
           style: ()=>({color:'#000', weight: WARN_W + 2*WARN_BUF,
                        opacity: 1, fill: false})});
         const line = L.geoJSON(j, {pane: 'warnpane', filter: keep,
-          style: f=>({color: f.properties.ph === 'TO' ? '#FF2A2A' : '#FFE12A',
+          style: f=>({color: warnColor(f.properties.ph),
                       weight: WARN_W, opacity: 1, fill: false})});
         casing.addTo(p.map); line.addTo(p.map);
         warnLayers.push(casing, line);
@@ -2169,6 +2171,11 @@ function drawCounties(ctx, win, w){
   ctx.restore();
 }
 
+// warning outline colors: tornado red, severe-tstorm yellow, flash-flood green
+function warnColor(ph){
+  return ph === 'TO' ? '#FF2A2A' : (ph === 'FF' ? '#2EE66B' : '#FFE12A');
+}
+
 function drawWarningsExport(ctx, win, w){
   const gj = window.WARN_GJ;
   if (!gj || !gj.features || !gj.features.length) return;
@@ -2205,7 +2212,7 @@ function drawWarningsExport(ctx, win, w){
   each((pr, g)=>strokeGeom(g));
   // pass 2: colored warning line on top
   ctx.lineWidth = colorW;
-  each((pr, g)=>{ ctx.strokeStyle = pr.ph === 'TO' ? '#FF2A2A' : '#FFE12A';
+  each((pr, g)=>{ ctx.strokeStyle = warnColor(pr.ph);
                   strokeGeom(g); });
   ctx.restore();
 }
