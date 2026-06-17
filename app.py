@@ -1278,6 +1278,7 @@ def build_page(frames, cbar, site, slat, slon, share_url=""):
 
 
 QUAD = "All fields (4-panel)"
+ZVF = "Z+V (2-panel)"
 
 QUAD_PAGE = """<!DOCTYPE html>
 <html><head>
@@ -1294,6 +1295,7 @@ QUAD_PAGE = """<!DOCTYPE html>
        grid-template-columns:1fr;grid-template-rows:1fr;
        background:#0c1d38}
  #grid.quad{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+ #grid.zv{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
  .panel{position:relative;overflow:hidden}
  .pmap{position:absolute;inset:0}
  /* radar canvas lives in a Leaflet pane (z 250): tiles(200) < radar(250)
@@ -1431,6 +1433,7 @@ const SITE = [__SLAT__, __SLON__];
 const SITE_ID = "__SITE__";
 const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
+const ZVF = "Z+V (2-panel)";
 const INIT_VIEW = __VIEW__;   // [lat, lon, zoom] from a share link, or null
 const INIT_DEAL = __DEAL__;   // start with dealiased velocity shown
 const RT = __RT__;            // real-time (trailing hour) mode
@@ -1442,7 +1445,12 @@ const PANEL_DATA = DATA.filter(d => d.name !== DEALF);
 const RAWV = PANEL_DATA.find(d => d.name === 'Radial velocity') || null;
 let mode = __MODE__;
 if (mode === DEALF) mode = 'Radial velocity';
-if (mode !== 'quad' && !PANEL_DATA.some(fd => fd.name === mode))
+if (mode !== 'quad' && mode !== 'zv' &&
+    !PANEL_DATA.some(fd => fd.name === mode))
+  mode = PANEL_DATA[0].name;
+// 2x1 mode requires both reflectivity and velocity to be present
+if (mode === 'zv' && !(PANEL_DATA.some(d => d.name === 'Reflectivity') &&
+                       PANEL_DATA.some(d => d.name === 'Radial velocity')))
   mode = PANEL_DATA[0].name;
 const VS = `attribute vec2 aPos; varying vec2 vUV;
 void main(){ vUV = aPos*0.5+0.5; gl_Position = vec4(aPos,0.,1.); }`;
@@ -1726,20 +1734,28 @@ function mkBtn(txt, m){
   modesEl.appendChild(b);
 }
 PANEL_DATA.forEach(fd=>mkBtn(SHORT[fd.name]||fd.name, fd.name));
+const HAS_ZV = PANEL_DATA.some(d=>d.name==='Reflectivity') &&
+               PANEL_DATA.some(d=>d.name==='Radial velocity');
+if (HAS_ZV) mkBtn('Z+V', 'zv');
 if (PANEL_DATA.length > 1) mkBtn('2\\u00d72', 'quad');
+// the two fields shown in 2x1 mode (match on stable panel name, not fd.name,
+// so a dealiased velocity panel still counts as the velocity panel)
+const ZV_SET = {'Reflectivity':1, 'Radial velocity':1};
 function setMode(m){
   mode = m;
   const grid = document.getElementById('grid');
   let zcDone = false;
   panels.forEach(p=>{
-    const vis = (m === 'quad') || (p.fd.name === m);
+    const vis = (m === 'quad') || (m === 'zv' && ZV_SET[p.name]) ||
+                (p.fd.name === m);
     p.wrap.style.display = vis ? 'block' : 'none';
-    p.wrap.classList.toggle('solo', vis && m !== 'quad');
+    p.wrap.classList.toggle('solo', vis && m !== 'quad' && m !== 'zv');
     const zc = vis && !zcDone;
     p.wrap.classList.toggle('zc', zc);
     if (zc) zcDone = true;
   });
   grid.classList.toggle('quad', m === 'quad');
+  grid.classList.toggle('zv', m === 'zv');
   document.querySelectorAll('#modes button').forEach(b=>
     b.classList.toggle('act', b.dataset.m === m));
   setTimeout(()=>{
@@ -1800,7 +1816,7 @@ document.getElementById('share').addEventListener('click', ()=>{
   const vis = panels.find(p=>p.wrap.style.display !== 'none') || panels[0];
   const c = vis.map.getCenter(), z = vis.map.getZoom();
   let url = SHARE_BASE + '&field=' +
-    encodeURIComponent(mode === 'quad' ? QUADF : mode) +
+    encodeURIComponent(mode === 'quad' ? QUADF : (mode === 'zv' ? ZVF : mode)) +
     '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + '&zoom=' + z;
   const ckd = document.getElementById('ck-dealias');
   if (ckd && ckd.checked) url += '&dealias=1';
@@ -2397,8 +2413,175 @@ async function exportQuad(kind, w, h){
   exToast('Movie saved ('+ext.slice(1)+')');
 }
 
+async function exportZV(kind, w, h){
+  // 2-panel composite. Landscape (4K) -> reflectivity LEFT, velocity RIGHT;
+  // portrait (reel) -> reflectivity TOP, velocity BOTTOM. The velocity panel
+  // exports whatever it currently shows (raw or dealiased), so the dealiased
+  // state is preserved.
+  const zp = panels.find(p=>p.name === 'Reflectivity');
+  const vp = panels.find(p=>p.name === 'Radial velocity');
+  if (!zp || !vp){ exToast('Z+V needs reflectivity and velocity'); return; }
+  const cells = [zp, vp];
+  if (!cells.some(p=>p.fd.frames.length)){ exToast('No data'); return; }
+  const s = Math.min(w, h);
+  const bh = Math.max(44, Math.round(s*0.066));   // matches drawChrome
+  const gap = Math.max(2, Math.round(s*0.004));
+  const landscape = w >= h;
+  let qw, qh, pos;
+  if (landscape){                       // side by side
+    qw = Math.floor((w-gap)/2); qh = h - bh;
+    pos = [[0,0],[qw+gap,0]];
+  } else {                              // stacked
+    qw = w; qh = Math.floor((h-bh-gap)/2);
+    pos = [[0,0],[0,qh+gap]];
+  }
+
+  const map = zp.map, sz = map.getSize();
+  const cm = PROJ.project(map.getCenter());
+  const e1 = PROJ.project(map.containerPointToLatLng([0, sz.y/2]));
+  const e2 = PROJ.project(map.containerPointToLatLng([sz.x, sz.y/2]));
+  const mercH = Math.abs(e2.x-e1.x) * (sz.y/sz.x);
+  const mercW = mercH * (qw/qh);
+  const win = {x0: cm.x-mercW/2, x1: cm.x+mercW/2,
+               y0: cm.y-mercH/2, y1: cm.y+mercH/2};
+
+  exToast('Rendering basemap\\u2026', true);
+  const base = document.createElement('canvas');
+  base.width = qw; base.height = qh;
+  await drawTiles(base.getContext('2d'),
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
+    win, qw, ['a','b','c','d']);
+  const refs = document.createElement('canvas');
+  refs.width = qw; refs.height = qh;
+  if (document.getElementById('ck-interstates').checked)
+    await drawTiles(refs.getContext('2d'),
+      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+      win, qw, null);
+  if (document.getElementById('ck-counties').checked)
+    drawCounties(refs.getContext('2d'), win, qw);
+  drawCitiesExport(refs.getContext('2d'), win, qw, qh);
+  drawWarningsExport(refs.getContext('2d'), win, qw);
+
+  const xgls = cells.map(p=>p.fd.frames.length
+    ? makeExportGL(qw, qh, p.fd.cbar) : null);
+  const work = document.createElement('canvas');
+  work.width = w; work.height = h;
+  const wctx = work.getContext('2d');
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const logoS = Math.round(s*0.13), pad = Math.round(s*0.018);
+
+  function panelChrome(ox, oy, p){
+    const qs = Math.min(qw, qh);
+    const fs = Math.max(11, Math.round(qs*0.034));
+    wctx.save();
+    wctx.font = "600 "+fs+"px 'Source Sans 3', sans-serif";
+    wctx.textBaseline = 'middle';
+    const name = ellipsize(wctx, p.fd.name, qw*0.6);
+    const tw = wctx.measureText(name).width;
+    rrPath(wctx, ox+fs*0.7, oy+fs*0.7, tw+fs*1.4, fs*1.9, fs*0.5);
+    wctx.fillStyle = 'rgba(19,41,75,.88)'; wctx.fill();
+    wctx.fillStyle = '#fff'; wctx.textAlign = 'left';
+    wctx.fillText(name, ox+fs*1.4, oy+fs*0.7+fs*0.95);
+    const cb = p.fd.cbar;
+    const cw2 = Math.round(qw*0.30), chh = Math.max(6, Math.round(fs*0.55)),
+          cx = ox+qw-cw2-fs, cy = oy+qh-chh-fs*1.7;
+    const g = wctx.createLinearGradient(cx,0,cx+cw2,0);
+    cb.stops.forEach((c,i)=>g.addColorStop(i/(cb.stops.length-1), c));
+    rrPath(wctx, cx-fs*0.5, cy-fs*0.45, cw2+fs, chh+fs*1.6, fs*0.35);
+    wctx.fillStyle = 'rgba(7,16,32,.55)'; wctx.fill();
+    wctx.fillStyle = g; wctx.fillRect(cx, cy, cw2, chh);
+    wctx.fillStyle = '#fff';
+    wctx.font = (fs*0.8)+"px 'Source Sans 3', sans-serif";
+    wctx.textAlign = 'left';  wctx.fillText(cb.vmin, cx, cy+chh+fs*0.55);
+    wctx.textAlign = 'right'; wctx.fillText(cb.vmax, cx+cw2, cy+chh+fs*0.55);
+    drawCbarTicks(wctx, cx, cy, cw2, chh, cb, fs*0.9);
+    wctx.textAlign = 'left';
+    wctx.restore();
+  }
+  function shortLabel(f){
+    const parts = f.label.split('\\u2022').map(x=>x.trim());
+    let t = SITE_ID+' \\u00b7 '+parts[0]+(parts[1]?' \\u00b7 '+parts[1]:'');
+    if (parts[2] && parts[2].indexOf('VCP') === 0) t += ' \\u00b7 '+parts[2];
+    return t;
+  }
+  async function compose(i){
+    wctx.fillStyle = '#071020'; wctx.fillRect(0,0,w,h);
+    let lab = null;
+    for (let q=0; q<cells.length; q++){
+      const p = cells[q];
+      const ox = pos[q][0], oy = pos[q][1];
+      wctx.drawImage(base, ox, oy);
+      if (p.fd.frames.length){
+        const fi = Math.min(i, p.fd.frames.length-1);
+        const f = p.fd.frames[fi];
+        if (!lab) lab = f;
+        await xgls[q].draw(f, fi, win);
+        wctx.drawImage(xgls[q].cnv, ox, oy);
+      }
+      wctx.drawImage(refs, ox, oy);
+      if (p.fd.frames.length) panelChrome(ox, oy, p);
+      else {
+        const qs = Math.min(qw, qh), fs2 = Math.round(qs*0.04);
+        wctx.font = "600 "+fs2+"px 'Source Sans 3', sans-serif";
+        wctx.textAlign = 'center'; wctx.textBaseline = 'middle';
+        wctx.lineWidth = fs2*0.25; wctx.strokeStyle = 'rgba(7,16,32,.85)';
+        wctx.strokeText('No data for this hour', ox+qw/2, oy+qh/2);
+        wctx.fillStyle = '#C8C6C7';
+        wctx.fillText('No data for this hour', ox+qw/2, oy+qh/2);
+        wctx.textAlign = 'left';
+      }
+    }
+    drawChrome(wctx, w, h, lab ? shortLabel(lab) : SITE_ID, null);
+    drawLogo(wctx, pad, h-bh-logoS-pad, logoS);
+    octx.clearRect(0,0,w,h);
+    octx.drawImage(work,0,0);
+  }
+
+  const act = cells.find(p=>p.fd.frames.length);
+  const f0 = act.fd.frames[0];
+  const stamp = f0.label.slice(0,10).replace(/-/g,'') + '_' +
+                f0.label.slice(11,16).split(':').join('') + 'Z';
+  const base_name = SITE_ID+'_zv_'+stamp+'_'+w+'x'+h;
+
+  if (kind === 'still'){
+    await compose(Math.max(0, idx));
+    out.toBlob(b=>{ dlBlob(b, base_name+'.png');
+                    exToast('Image saved'); }, 'image/png');
+    return;
+  }
+  const mime = ['video/mp4;codecs=avc1.640034','video/mp4;codecs=avc1.640033',
+                'video/mp4;codecs=avc1.640028','video/mp4',
+                'video/webm;codecs=vp9','video/webm']
+    .find(m=>window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+  if (!mime){ exToast('Video recording unsupported in this browser'); return; }
+  const ext = mime.indexOf('mp4')>=0 ? '.mp4' : '.webm';
+  exToast('Preparing radar textures\\u2026', true);
+  for (let q=0; q<cells.length; q++)
+    if (xgls[q]) await xgls[q].preload(cells[q].fd.frames);
+  await compose(0);
+  const stream = out.captureStream(30);
+  const rec = new MediaRecorder(stream,
+    {mimeType:mime, videoBitsPerSecond: Math.round(w*h*30*0.5)});
+  const chunks = [];
+  rec.ondataavailable = e=>{ if (e.data.size) chunks.push(e.data); };
+  const done = new Promise(res=>{ rec.onstop = res; });
+  rec.start(250);
+  for (let i=0; i<nmax; i++){
+    exToast('Recording frame '+(i+1)+'/'+nmax+'\\u2026', true);
+    await compose(i);
+    await new Promise(r=>setTimeout(r, 450));
+  }
+  rec.stop();
+  await done;
+  dlBlob(new Blob(chunks, {type:mime}), base_name+ext);
+  exToast('Movie saved ('+ext.slice(1)+')');
+}
+
 async function exportMedia(kind, w, h){
   if (mode === 'quad') return exportQuad(kind, w, h);
+  if (mode === 'zv') return exportZV(kind, w, h);
   const vis = activePanel(), fd = vis.fd;
   if (!fd.frames.length) { exToast('No data in this panel'); return; }
   const map = vis.map, sz = map.getSize();
@@ -2575,6 +2758,8 @@ def _mode_page(tpl, field_name, view=None, deal=False, rt=False):
     HTML-escaped (srcdoc), so escape the JSON too."""
     if field_name == QUAD:
         mode = "quad"
+    elif field_name == ZVF:
+        mode = "zv"
     elif field_name == DEALIAS_NAME:
         mode, deal = "Radial velocity", True
     else:
@@ -2845,7 +3030,7 @@ def browse(site, field_name, year, month, day, hour, progress=None,
         except ValueError:
             return _msg("That calendar date doesn't exist — check day/month.")
         hr = int(str(hour)[:2])
-        if field_name not in FIELDS and field_name not in (QUAD,
+        if field_name not in FIELDS and field_name not in (QUAD, ZVF,
                                                            DEALIAS_NAME):
             field_name = "Reflectivity"
 
@@ -3398,7 +3583,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             view = None
         site = q.get("site", "KILX").upper()[:4]
         field = q.get("field", "Reflectivity")
-        if field not in FIELDS and field not in (QUAD, DEALIAS_NAME):
+        if field not in FIELDS and field not in (QUAD, ZVF, DEALIAS_NAME):
             field = "Reflectivity"
         year = q.get("year", "2023")
         month = q.get("month", "06").zfill(2)
