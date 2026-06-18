@@ -3780,7 +3780,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     # server-side live refresh: a Timer tick every 2 minutes replaces the
     # in-page hidden-button click (programmatic DOM clicks proved unreliable
     # across browsers). Archive sessions skip at zero cost.
-    rt_timer = gr.Timer(120)
+    rt_timer = gr.Timer(60)   # re-check the live feed for new chunks every minute
 
     def rt_tick(mode, site, field, deal, progress=gr.Progress()):
         # Only refresh the live frame file; the in-page poller merges the new
