@@ -408,6 +408,22 @@ except Exception:
     pass
 CITIES_URL = "/gradio_api/file=" + CITIES_JSON
 
+# NEXRAD site locations for the in-map site picker (from Py-ART's station
+# table), served from the static cache dir like cities.json
+SITES_JSON = os.path.join(VOL_CACHE_DIR, "sites.json")
+try:
+    from pyart.io.nexrad_common import NEXRAD_LOCATIONS as _NX_LOC
+    _sites = sorted(
+        [sid, round(float(v["lat"]), 4), round(float(v["lon"]), 4)]
+        for sid, v in _NX_LOC.items()
+        if len(sid) == 4 and "lat" in v and "lon" in v
+    )
+    with open(SITES_JSON, "w") as _f:
+        json.dump(_sites, _f)
+except Exception:
+    pass
+SITES_URL = "/gradio_api/file=" + SITES_JSON
+
 
 def _fetch_warnings():
     """Pull IEM current watches/warnings, keep storm-based TOR/SVR warnings,
@@ -471,7 +487,7 @@ def _warn_poller():
 # small static assets that live in VOL_CACHE_DIR but must never be LRU-pruned
 # (cities.json is copied once at startup and never re-touched, so without this
 # guard it sorts oldest and gets evicted as radar volumes fill the 2 GiB cap)
-_CACHE_KEEP = {"cities.json", "warnings.json"}
+_CACHE_KEEP = {"cities.json", "warnings.json", "sites.json"}
 
 
 def _prune_vol_cache():
@@ -1387,6 +1403,18 @@ QUAD_PAGE = """<!DOCTYPE html>
      border:1px solid var(--ib3);border-radius:4px;
      box-shadow:0 1px 5px rgba(0,0,0,.4)}
  #export:hover{background:var(--io)}
+ #sites{position:absolute;top:200px;left:10px;z-index:1100;width:34px;
+     height:34px;display:flex;align-items:center;justify-content:center;
+     cursor:pointer;background:var(--ib2);color:#fff;
+     border:1px solid var(--ib3);border-radius:4px;
+     box-shadow:0 1px 5px rgba(0,0,0,.4)}
+ #sites:hover{background:var(--io)}
+ #sites.act{background:var(--io);border-color:var(--io)}
+ .sitebox{width:46px;height:18px;line-height:18px;text-align:center;
+     background:#1a9a3a;color:#fff;font:bold 12px Arial,Helvetica,sans-serif;
+     border:1px solid #08381a;border-radius:3px;cursor:pointer;
+     box-shadow:0 1px 3px rgba(0,0,0,.55)}
+ .sitebox:hover{background:#26c455}
  #exmenu{position:absolute;top:158px;left:52px;z-index:1100;display:none;
      flex-direction:column;gap:6px;background:rgba(19,41,75,.95);
      border:1px solid var(--ib3);border-top:4px solid var(--io);
@@ -1442,6 +1470,13 @@ QUAD_PAGE = """<!DOCTYPE html>
    <circle cx="12" cy="13" r="4"/>
  </svg>
 </div>
+<div id="sites" title="Show radar sites — click one to switch">
+ <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round">
+   <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/>
+   <line x1="12" y1="12" x2="19.5" y2="6.5"/>
+ </svg>
+</div>
 <div id="exmenu"><b>Export view</b>
  <button data-k="still4k">Still &middot; 4K (3840&times;2160)</button>
  <button data-k="stillig">Still &middot; Instagram reel (1080&times;1920)</button>
@@ -1480,6 +1515,8 @@ const INIT_DEAL = __DEAL__;   // start with dealiased velocity shown
 const RT = __RT__;            // real-time (trailing hour) mode
 const WARN_URL = "__WARNURL__";
 const CITIES_URL = "__CITIESURL__";
+const SITES_URL = "__SITESURL__";
+let SITES = null, sitesOn = false;   // in-map radar-site picker overlay
 const LIVE_URL = "__LIVEURL__";        // full live frame set (fetched on change)
 const LIVE_TAG_URL = "__LIVETAGURL__"; // tiny etag sidecar (polled cheaply)
 const DEALF = "Radial velocity (dealiased)";
@@ -1628,6 +1665,10 @@ function makePanel(fd, first){
   map.createPane('warnpane');
   map.getPane('warnpane').style.zIndex = 660;
   map.getPane('warnpane').style.pointerEvents = 'none';
+  // radar-site picker pane: clickable (pointer events on), above warnings
+  map.createPane('sitepane');
+  map.getPane('sitepane').style.zIndex = 670;
+  map.on('moveend zoomend', ()=>{ if (sitesOn) drawSites(); });
   // radar canvas pane sits between basemap tiles and all vector panes
   map.createPane('radarpane');
   map.getPane('radarpane').style.zIndex = 250;
@@ -1808,6 +1849,7 @@ function setMode(m){
   setTimeout(()=>{
     panels.forEach(p=>{ p.map.invalidateSize(false); p.requestDraw(); });
     if (idx >= 0) refreshLabel(idx);
+    if (sitesOn) drawSites();
   }, 60);
 }
 
@@ -1890,6 +1932,63 @@ document.getElementById('share').addEventListener('click', ()=>{
     navigator.clipboard.writeText(url).then(done,
       ()=>window.prompt('Copy share link:',url));
   else window.prompt('Copy share link:',url);
+});
+
+// ---- radar-site picker overlay ----------------------------------------
+// green clickable boxes (Arial bold 4-letter ID) at each NEXRAD site on the
+// current view; clicking one loads that radar, keeping the current field/
+// layout and mode (live -> latest live; archive -> same hour as loaded).
+function siteNavURL(id){
+  let u = SHARE_BASE.replace(/([?&]site=)[^&]*/i, '$1' + id);
+  if (!/[?&]site=/i.test(u)) u += (u.indexOf('?')>=0?'&':'?') + 'site=' + id;
+  u += '&field=' +
+    encodeURIComponent(mode === 'quad' ? QUADF : (mode === 'zv' ? ZVF : mode));
+  const ckd = document.getElementById('ck-dealias');
+  if (ckd && ckd.checked) u += '&dealias=1';
+  if (!/^https?:/i.test(u)){
+    let base = '';
+    try { base = parent.location.origin + parent.location.pathname; }
+    catch (e) { base = location.origin + location.pathname; }
+    u = base + u;
+  }
+  return u;
+}
+function clearSites(){
+  panels.forEach(p=>{ if (p._siteLayer){ p._siteLayer.remove(); p._siteLayer = null; } });
+}
+function drawSites(){
+  clearSites();
+  if (!sitesOn || !SITES) return;
+  panels.forEach(p=>{
+    if (p.wrap.style.display === 'none') return;
+    const b = p.map.getBounds(), placed = [], grp = L.layerGroup();
+    for (let i = 0; i < SITES.length; i++){
+      const id = SITES[i][0], la = SITES[i][1], lo = SITES[i][2];
+      if (la < b.getSouth() || la > b.getNorth() ||
+          lo < b.getWest()  || lo > b.getEast()) continue;
+      const pt = p.map.latLngToContainerPoint([la, lo]);
+      let ok = true;
+      for (let j = 0; j < placed.length; j++)
+        if (Math.abs(pt.x-placed[j][0]) < 50 && Math.abs(pt.y-placed[j][1]) < 20){ ok = false; break; }
+      if (!ok) continue;
+      placed.push([pt.x, pt.y]);
+      const icon = L.divIcon({className:'', html:'<div class="sitebox">'+id+'</div>',
+                              iconSize:[46,18], iconAnchor:[23,9]});
+      const m = L.marker([la, lo], {icon, pane:'sitepane', keyboard:false, title:id});
+      m.on('click', ()=>{ const u = siteNavURL(id);
+        try { parent.location.href = u; } catch (e) { location.href = u; } });
+      m.addTo(grp);
+    }
+    grp.addTo(p.map);
+    p._siteLayer = grp;
+  });
+}
+fetch(SITES_URL).then(r=>r.json()).then(a=>{ SITES = a;
+  if (sitesOn) drawSites(); }).catch(()=>{});
+document.getElementById('sites').addEventListener('click', ()=>{
+  sitesOn = !sitesOn;
+  document.getElementById('sites').classList.toggle('act', sitesOn);
+  drawSites();
 });
 
 // overlays applied to all panels
@@ -2949,6 +3048,7 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__SITE__", site)
             .replace("__WARNURL__", WARN_URL)
             .replace("__CITIESURL__", CITIES_URL)
+            .replace("__SITESURL__", SITES_URL)
             .replace("__LIVEURL__", "/gradio_api/file=" + big)
             .replace("__LIVETAGURL__", "/gradio_api/file=" + tag)
             .replace("__LIVETAG0__", json.dumps(etag))
@@ -3608,7 +3708,17 @@ HEADER_HTML = f"""
   </div>
 </div>"""
 
+# block-I favicon (Illini Orange I on Illini Blue), as an SVG data URI
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">'
+    '<rect width="400" height="400" rx="72" fill="#13294B"/>'
+    '<path d="M150 70 h100 v42 h-26 v76 h26 v42 h-100 v-42 h26 v-76 h-26 z" '
+    'fill="#FF5F05" stroke="#fff" stroke-width="10"/></svg>'
+)
+_FAVICON_B64 = base64.b64encode(_FAVICON_SVG.encode()).decode()
+
 OG_HEAD = f"""
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,{_FAVICON_B64}"/>
 <meta property="og:title" content="NEXRAD level 2 browser"/>
 <meta property="og:description" content="Gate-native WebGL browsing of archived WSR-88D 0.5° scans (SAILS-aware) from the AWS NEXRAD Level 2 archive."/>
 <meta property="og:image" content="{THUMB_URL}"/>
