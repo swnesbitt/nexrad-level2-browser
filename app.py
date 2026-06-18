@@ -3021,6 +3021,12 @@ def _rt_keys(site):
 _RT_CACHE = {}        # site -> dict(ts, tpl, by_field, site_ll, has_deal)
 _RT_TTL = 150         # seconds — refresh cadence is 300 s
 
+# sites with a recent live viewer -> (last_request_ts, want_deal). A background
+# daemon keeps these refreshed so ingest never depends on a browser tab driving
+# the client timer (backgrounded tabs freeze their timers).
+_LIVE_ACTIVE = {}
+_LIVE_ACTIVE_TTL = 20 * 60   # keep polling a site for 20 min after last view
+
 
 def _realtime_compute(site, field_name, _p, view, want_deal=False):
     """Decode the trailing hour. Short-lived cache + in-flight dedup keep
@@ -3235,6 +3241,9 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             return _msg("Pick a NEXRAD site (e.g. KTLX, KILX, PHWA).")
         site = m.group(1).upper()
         if realtime:
+            # remember this site so the background poller keeps it fresh even
+            # if the client timer stops (inactive/backgrounded tab)
+            _LIVE_ACTIVE[site] = (time_mod.time(), bool(want_deal))
             return _realtime_compute(site, field_name, _p, view, want_deal)
         try:
             date = dt.date(int(year), int(month), int(day))
@@ -3881,10 +3890,34 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         [status, map_html, dl], show_progress_on=map_html,
     )
 
+def _live_poller():
+    """Keep live_<site>.json current for recently-viewed live sites regardless
+    of any browser tab (client timers freeze when a tab is backgrounded). Calls
+    _realtime_compute directly so it does NOT refresh the activity timestamp —
+    sites age out _LIVE_ACTIVE_TTL after the last real view."""
+    noop = lambda *a, **k: None
+    while True:
+        try:
+            now = time_mod.time()
+            active = [(s, d) for s, (ts, d) in list(_LIVE_ACTIVE.items())
+                      if now - ts < _LIVE_ACTIVE_TTL]
+            for s, deal in active:
+                try:
+                    _realtime_compute(s, "Reflectivity", noop, None, deal)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time_mod.sleep(60)
+
+
 # pre-render the default case at startup so first visitors get it instantly
 threading.Thread(target=lambda: browse(*DEFAULT_VIEW), daemon=True).start()
 # keep live warnings fresh for real-time mode
 threading.Thread(target=_warn_poller, daemon=True).start()
+# keep live radar frames fresh for recently-viewed sites (server-side, so it
+# doesn't depend on a client tab driving the refresh timer)
+threading.Thread(target=_live_poller, daemon=True).start()
 
 if __name__ == "__main__":
     # ssr_mode=False -> Python serves the OG-patched index.html, so social
