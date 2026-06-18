@@ -408,16 +408,19 @@ except Exception:
     pass
 CITIES_URL = "/gradio_api/file=" + CITIES_JSON
 
-# NEXRAD site locations for the in-map site picker (from Py-ART's station
-# table), served from the static cache dir like cities.json
+# NEXRAD site locations for the in-map site picker: the curated WSR-88D list
+# (sites.py) for IDs, with coordinates from Py-ART's station table. Excludes
+# TDWR terminal radars (no Level 2 archive). Served like cities.json.
 SITES_JSON = os.path.join(VOL_CACHE_DIR, "sites.json")
 try:
     from pyart.io.nexrad_common import NEXRAD_LOCATIONS as _NX_LOC
-    _sites = sorted(
-        [sid, round(float(v["lat"]), 4), round(float(v["lon"]), 4)]
-        for sid, v in _NX_LOC.items()
-        if len(sid) == 4 and "lat" in v and "lon" in v
-    )
+    _sites = []
+    for _icao, _city, _st in SITES:
+        v = _NX_LOC.get(_icao)
+        if v and "lat" in v and "lon" in v:
+            _sites.append([_icao, round(float(v["lat"]), 4),
+                           round(float(v["lon"]), 4)])
+    _sites.sort()
     with open(SITES_JSON, "w") as _f:
         json.dump(_sites, _f)
 except Exception:
