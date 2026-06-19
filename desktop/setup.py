@@ -1,16 +1,17 @@
 """
-py2app build config — a STARTING POINT for a standalone .app.
+py2app build config for the standalone, UNSIGNED macOS app (Apple Silicon).
 
-    pip install py2app
-    python setup.py py2app           # -> dist/NEXRAD Level 2.app
+Don't run this by hand — use ./build_app.sh, which makes a clean arm64 venv,
+generates the icon, runs py2app, ad-hoc signs, and packages the .dmg. (If you
+do run it directly: `pip install py2app && python setup.py py2app`.)
 
 Heads-up: bundling the scientific stack (pyart / scipy / numpy / matplotlib /
 netCDF4 / HDF5) with py2app is fiddly — expect to iterate on `packages`,
 `includes`, and `excludes`, and to chase missing dylibs/data files. If py2app
 fights you, Briefcase (BeeWare) is often smoother for this kind of app.
 
-This builds on Apple Silicon (arm64); region-dealias and the scientific wheels
-all ship arm64. A universal2 build needs Intel wheels too.
+Apple Silicon only: build with an arm64 Python; the app inherits that arch.
+A universal2 (Intel + ARM) build would need Intel wheels too.
 """
 
 from setuptools import setup
@@ -41,7 +42,7 @@ OPTIONS = {
         # data fetches use HTTPS; allow them explicitly to be safe
         "NSAppTransportSecurity": {"NSAllowsArbitraryLoads": True},
     },
-    # "iconfile": "AppIcon.icns",   # drop in a block-I .icns for the dock icon
+    "iconfile": "AppIcon.icns",     # generated from ../logo.png by build_app.sh
 }
 
 setup(

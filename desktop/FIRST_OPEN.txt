@@ -1,0 +1,33 @@
+NEXRAD Level 2 — how to open it the first time (macOS)
+======================================================
+
+This app is free and not signed with a paid Apple Developer account, so the
+FIRST time you open it macOS shows a warning about an "unidentified developer."
+That's expected and safe. You only do this once.
+
+INSTALL
+  1. Drag the "NEXRAD Level 2" icon onto the Applications folder in this window.
+
+OPEN THE FIRST TIME
+  2. Open your Applications folder and find "NEXRAD Level 2", then:
+
+     • macOS 14 (Sonoma) and earlier:
+         Right-click (or Control-click) the app  ->  Open  ->  Open.
+
+     • macOS 15 (Sequoia) and later:
+         Double-click it once (it will be blocked), then open
+         System Settings  ->  Privacy & Security, scroll down, and click
+         "Open Anyway".  Open the app again and confirm.
+
+  After this first time, it opens normally like any other app.
+
+OPTIONAL — skip the warning entirely
+  Open the Terminal app and paste this line, then press Return:
+
+     xattr -dr com.apple.quarantine "/Applications/NEXRAD Level 2.app"
+
+  Then just double-click the app.
+
+NOTE
+  The app does all the radar processing on your Mac, but it still needs an
+  internet connection to download the radar data and map tiles.
