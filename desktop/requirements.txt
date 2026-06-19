@@ -1,0 +1,19 @@
+# Desktop (local macOS) build of the NEXRAD Level 2 browser.
+# Same stack as the Space, plus the native webview wrapper.
+
+gradio>=5.0
+arm-pyart
+xradar @ git+https://github.com/swnesbitt/xradar
+region-dealias            # Rust dealiaser (macOS arm64 wheels on PyPI)
+cmweather
+cmasher
+matplotlib
+numpy
+scipy
+pillow
+pyshp
+
+# native window (macOS uses the built-in WKWebView via pyobjc)
+pywebview
+pyobjc-framework-Cocoa ; sys_platform == "darwin"
+pyobjc-framework-WebKit ; sys_platform == "darwin"

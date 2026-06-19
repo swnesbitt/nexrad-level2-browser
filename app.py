@@ -4063,15 +4063,22 @@ def _live_poller():
         time_mod.sleep(60)
 
 
-# pre-render the default case at startup so first visitors get it instantly
-threading.Thread(target=lambda: browse(*DEFAULT_VIEW), daemon=True).start()
-# keep live warnings fresh for real-time mode
-threading.Thread(target=_warn_poller, daemon=True).start()
-# keep live radar frames fresh for recently-viewed sites (server-side, so it
-# doesn't depend on a client tab driving the refresh timer)
-threading.Thread(target=_live_poller, daemon=True).start()
+def start_background():
+    """Start the startup pre-render + the warnings/live poller daemons. Kept
+    out of module import so that (a) ProcessPoolExecutor workers, which re-import
+    this module under the macOS 'spawn' start method, don't relaunch the daemons
+    (or recurse), and (b) the desktop launcher can start them explicitly."""
+    # pre-render the default case at startup so first visitors get it instantly
+    threading.Thread(target=lambda: browse(*DEFAULT_VIEW), daemon=True).start()
+    # keep live warnings fresh for real-time mode
+    threading.Thread(target=_warn_poller, daemon=True).start()
+    # keep live radar frames fresh for recently-viewed sites (server-side, so it
+    # doesn't depend on a client tab driving the refresh timer)
+    threading.Thread(target=_live_poller, daemon=True).start()
+
 
 if __name__ == "__main__":
+    start_background()
     # ssr_mode=False -> Python serves the OG-patched index.html, so social
     # link previews show our title/thumbnail instead of Gradio defaults
     demo.launch(ssr_mode=False)
