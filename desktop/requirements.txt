@@ -1,17 +1,10 @@
 # Desktop (local macOS) build of the NEXRAD Level 2 browser.
-# Same stack as the Space, plus the native webview wrapper.
+#
+# The app's dependencies are defined ONCE in ../requirements.txt (shared with
+# the Hugging Face Space) so the two builds never drift. Here we only add the
+# native-window wrapper.
 
-gradio>=5.0
-arm-pyart
-xradar @ git+https://github.com/swnesbitt/xradar
-region-dealias            # Rust dealiaser (macOS arm64 wheels on PyPI)
-cmweather
-cmasher
-matplotlib
-numpy
-scipy
-pillow
-pyshp
+-r ../requirements.txt
 
 # native window (macOS uses the built-in WKWebView via pyobjc)
 pywebview

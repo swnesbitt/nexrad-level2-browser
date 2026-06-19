@@ -58,6 +58,13 @@ def main():
     import app          # builds `demo`; daemons stay dormant until we start them
     import webview      # macOS WKWebView wrapper
 
+    # the launcher and the Space share ../app.py — fail loudly if an app.py
+    # update drops the small interface this wrapper relies on
+    for _attr in ("demo", "start_background"):
+        if not hasattr(app, _attr):
+            sys.exit(f"app.py is missing `{_attr}`; the desktop launcher and "
+                     f"the Space share app.py — keep this interface in sync.")
+
     port = _free_port()
     app.demo.launch(
         server_name="127.0.0.1",

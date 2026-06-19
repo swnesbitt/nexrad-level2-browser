@@ -40,6 +40,29 @@ usually means adding to `packages`/`includes` and fixing missing dylibs/data
 files. If it's painful, try **Briefcase (BeeWare)** instead, which is generally
 friendlier for scientific Python + a webview.
 
+## Keeping the HF Space and the Mac app in sync
+
+They share a single source of truth, so an update lands in both:
+
+- **App code & UI:** all in `../app.py`. The Space runs it as `__main__`; the
+  Mac launcher `import app` and calls `app.demo.launch(...)` + `app.start_background()`.
+  Edit `app.py` once → it applies to both. The launcher relies on only that
+  two-symbol interface (`demo`, `start_background`) and checks for it at startup.
+- **Dependencies:** defined once in `../requirements.txt` (used by the Space).
+  `desktop/requirements.txt` does `-r ../requirements.txt` and adds only the
+  webview wrapper — so versions can't drift.
+- **Dealiaser:** both use the published `region-dealias` wheel, with the same
+  pyart fallback.
+
+**Update workflow:** make the change in `app.py` (and `requirements.txt` if a
+dep changed), commit/push → the Space redeploys automatically; on the Mac,
+`git pull` then `python launcher.py` (or rebuild the `.app`). Nothing app-level
+is duplicated between the two, so they stay identical by construction.
+
+The only build-specific files are in this `desktop/` folder
+(`launcher.py`, `requirements.txt`, `setup.py`) — they wrap the app, they don't
+fork it.
+
 ## Known hurdles / notes
 
 - **Python 3.11.** Matches the `region-dealias` wheels (cp310/311/312) and the
