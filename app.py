@@ -1978,8 +1978,26 @@ function drawSites(){
       const icon = L.divIcon({className:'', html:'<div class="sitebox">'+id+'</div>',
                               iconSize:[46,18], iconAnchor:[23,9]});
       const m = L.marker([la, lo], {icon, pane:'sitepane', keyboard:false, title:id});
-      m.on('click', ()=>{ const u = siteNavURL(id);
-        try { parent.location.href = u; } catch (e) { location.href = u; } });
+      m.on('click', ()=>{
+        const payload = id + '\\t' +
+          (mode==='quad' ? QUADF : (mode==='zv' ? ZVF : mode));
+        try {
+          // switch radar in place so the load progress bar shows on the map
+          const host = parent.document.getElementById('site-jump');
+          const ta = host.querySelector('textarea, input');
+          const set = Object.getOwnPropertyDescriptor(ta.__proto__, 'value').set;
+          set.call(ta, payload);
+          ta.dispatchEvent(new Event('input', {bubbles:true}));
+          sitesOn = false;
+          document.getElementById('sites').classList.remove('act');
+          clearSites();
+          setTimeout(()=>{ const gb = parent.document.getElementById('site-go');
+            (gb.querySelector('button') || gb).click(); }, 60);
+        } catch (e) {
+          const u = siteNavURL(id);
+          try { parent.location.href = u; } catch (e2) { location.href = u; }
+        }
+      });
       m.addTo(grp);
     }
     grp.addTo(p.map);
@@ -3665,7 +3683,7 @@ ILLINI_CSS = """
 #ctrl-row .block:has(input:disabled) input { cursor: not-allowed !important; }
 @media (max-width: 900px) { #ctrl-row { flex-wrap: wrap !important; } }
 footer { display: none !important; }
-#dax-trigger, #rt-refresh, #rt-force { display: none !important; }
+#dax-trigger, #rt-refresh, #rt-force, #site-go, #site-jump { display: none !important; }
 @media (max-width: 700px) {
   .gradio-container { padding: 8px 10px 4px !important; }
   .gradio-container h1 { font-size: 15px !important; }
@@ -3837,6 +3855,10 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             # hidden: the in-map refresh button clicks this to force a live
             # re-decode now (picks up new scans) without reloading the iframe
             frr = gr.Button("Force live", elem_id="rt-force", size="sm")
+            # hidden: the in-map site picker writes "<ICAO>\t<field>" here and
+            # clicks site-go to switch radars in place (with a progress bar)
+            site_jump = gr.Textbox(elem_id="site-jump")
+            sgo = gr.Button("Go site", elem_id="site-go", size="sm")
     status = gr.Markdown()
     map_html = gr.HTML(elem_id="map-html")
 
@@ -3898,6 +3920,23 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
               [mode_sw, site_tb, field_dd, year_dd, month_dd, day_dd,
                hour_dd],
               [status, map_html, deal_st], show_progress_on=map_html)
+
+    def site_jump_h(jump, mode, year, month, day, hour, progress=gr.Progress()):
+        # jump = "<ICAO>\t<field/mode>" from the in-map site picker; load that
+        # radar in place (live -> latest; archive -> same hour), keeping field.
+        parts = (jump or "").split("\t")
+        site = parts[0].strip()
+        field = parts[1] if len(parts) > 1 and parts[1] else "Reflectivity"
+        rt = (mode == "Live")
+        info, page = browse(site, field, year, month, day, hour,
+                            progress=progress, realtime=rt)
+        return (info, page,
+                gr.DownloadButton(interactive=bool(page) and not rt),
+                gr.Dropdown(value=site))
+
+    sgo.click(site_jump_h,
+              [site_jump, mode_sw, year_dd, month_dd, day_dd, hour_dd],
+              [status, map_html, dl, site_tb], show_progress_on=map_html)
 
     # server-side live refresh: a Timer tick every 2 minutes replaces the
     # in-page hidden-button click (programmatic DOM clicks proved unreliable
