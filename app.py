@@ -4089,7 +4089,7 @@ def _live_poller():
     its first requests, then warm one site at a time with a gap between, so live
     user requests interleave instead of queueing behind a burst of six decodes."""
     noop = lambda *a, **k: None
-    time_mod.sleep(45)             # let the app boot + serve first visitors
+    time_mod.sleep(120)           # let the app boot, pass HF health check + get promoted
     while True:
         for s in POLL_SITES:
             try:
@@ -4108,10 +4108,16 @@ def start_background():
     # warm the default page (LIVE KILX) at startup so first visitors get it
     # instantly; browse(realtime=True) also registers KILX with the live poller
     # so it stays fresh. (year/month/day/hour are ignored in realtime.)
-    threading.Thread(
-        target=lambda: browse("KILX", "Reflectivity", *DEFAULT_VIEW[2:],
-                              realtime=True),
-        daemon=True).start()
+    def _prewarm():
+        # Defer the first live decode so the app idles through HF's health
+        # check and gets promoted to the public URL before we spend CPU; the
+        # first visitor's demo.load still triggers the decode on its own.
+        time_mod.sleep(90)
+        try:
+            browse("KILX", "Reflectivity", *DEFAULT_VIEW[2:], realtime=True)
+        except Exception:
+            pass
+    threading.Thread(target=_prewarm, daemon=True).start()
     # keep live warnings fresh for real-time mode
     threading.Thread(target=_warn_poller, daemon=True).start()
     # keep live radar frames fresh for recently-viewed sites (server-side, so it
