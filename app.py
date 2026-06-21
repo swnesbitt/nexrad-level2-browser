@@ -1339,8 +1339,8 @@ def build_page(frames, cbar, site, slat, slon, share_url=""):
             .replace("__SITE__", site)
             .replace("__SHARE__", share_url))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 245px);'
-            f'min-height:420px;border:0;border-radius:4px" '
+            f'style="width:100%;height:calc(100dvh - 170px);'
+            f'min-height:460px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
 
@@ -3115,8 +3115,8 @@ def build_bundle_page(by_field, site, slat, slon, share_base="",
             .replace("__RTSEC__", str(int(rt_refresh_s)))
             .replace("__SHAREBASE__", share_base))
     return (f'<iframe allow="clipboard-write" '
-            f'style="width:100%;height:calc(100vh - 170px);'
-            f'min-height:480px;border:0;border-radius:4px" '
+            f'style="width:100%;height:calc(100dvh - 170px);'
+            f'min-height:460px;border:0;border-radius:4px" '
             f'srcdoc="{html_mod.escape(page)}"></iframe>')
 
 
@@ -3720,11 +3720,26 @@ ILLINI_CSS = """
 @media (max-width: 900px) { #ctrl-row { flex-wrap: wrap !important; } }
 footer { display: none !important; }
 #dax-trigger, #rt-refresh, #rt-force, #site-go, #site-jump { display: none !important; }
+/* Map panel: identical height in every state (loading / single / Z+V / quad)
+   and stable on iOS Safari — 100dvh ignores the address-bar show/hide that
+   makes 100vh resize the radar as you scroll. */
+#map-html iframe, #map-html .nx-mapfill {
+  height: calc(100vh - 170px) !important;
+  height: calc(100dvh - 170px) !important;
+  min-height: 460px !important; box-sizing: border-box !important; }
 @media (max-width: 700px) {
   .gradio-container { padding: 8px 10px 4px !important; }
-  .gradio-container h1 { font-size: 15px !important; }
+  .gradio-container h1 { font-size: 14px !important; letter-spacing: .03em !important; }
   .gradio-container .prose, .gradio-container .prose p {
-    font-size: 11px !important; }
+    font-size: 10px !important; line-height: 1.3 !important; }
+  #ctrl-row .block > label,
+  #ctrl-row span[data-testid="block-info"] { font-size: 10px !important; }
+  /* taller chrome on phones (header + wrapped control rows) → larger offset,
+     so the radar still fills the screen without overflowing it */
+  #map-html iframe, #map-html .nx-mapfill {
+    height: calc(100vh - 300px) !important;
+    height: calc(100dvh - 300px) !important;
+    min-height: 380px !important; }
 }
 """
 
@@ -3901,8 +3916,8 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
     # right away; maybe_browse() replaces this with the radar bundle, and the
     # gr.Progress tracker overlays the decode steps on top of it.
     _LOADING = (
-        "<div style='display:flex;align-items:center;justify-content:center;"
-        "gap:12px;height:calc(100vh - 170px);min-height:340px;color:#9fb0c3;"
+        "<div class='nx-mapfill' style='display:flex;align-items:center;justify-content:center;"
+        "gap:12px;height:calc(100dvh - 170px);min-height:460px;color:#9fb0c3;"
         "background:#0b1220;font:600 17px system-ui,-apple-system,Segoe UI,"
         "Roboto,sans-serif;'>"
         "<span style='width:20px;height:20px;border:3px solid #3b82f6;"
