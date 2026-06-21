@@ -3144,7 +3144,9 @@ _RT_TTL = 150         # seconds — refresh cadence is 300 s
 # of any browser tab. Every other site still works in live mode on demand (chunk
 # feed + archive fallback) -- it's just decoded when requested, not polled.
 # Trim/extend to taste; more sites = more steady CPU on the Space.
-POLL_SITES = ("KILX", "KLOT", "KLSX", "KDVN", "KVWX", "KPAH")
+POLL_SITES = ("KILX",)   # free 2-vCPU tier: keep only the home site warm so the
+                         # server has CPU left to serve the UI; every other site
+                         # decodes on demand. Widen this on a larger CPU tier.
 
 
 def _realtime_compute(site, field_name, _p, view, want_deal=False):
@@ -4097,7 +4099,7 @@ def _live_poller():
             except Exception:
                 pass
             time_mod.sleep(10)    # spread the load; yield CPU to user requests
-        time_mod.sleep(30)
+        time_mod.sleep(300)       # re-warm only every ~5 min; keep the box free to serve
 
 
 def start_background():
