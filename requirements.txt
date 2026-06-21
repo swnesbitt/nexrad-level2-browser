@@ -7,4 +7,4 @@ matplotlib
 numpy
 pillow
 pyshp
-gradio>=5.0
+gradio==5.34.2   # pinned to the HF Space README sdk_version (keeps Space + Mac identical; Gradio 6 dropped launch(show_api=...) and more)

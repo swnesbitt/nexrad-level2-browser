@@ -180,7 +180,18 @@ def _field_cfg(fn):
     return DEALIAS_CFG if fn == DEALIAS_NAME else FIELDS[fn]
 
 
-ELEV_MAX = 0.75          # deg — treat sweeps below this as the 0.5° split cut
+ELEV_MAX = 0.75          # deg — only consider sweeps below this as low-level cuts
+LOW_SWEEP_TOL = 0.15     # deg — cuts within this of the lowest are the same base
+                         # elevation (split cuts / SAILS); higher cuts are dropped
+
+
+def _lowest_sweep_idx(angles, idxs):
+    """Keep only the lowest-elevation cut group. A radar that scans below 0.5°
+    (e.g. KBUF) then shows just that lowest sweep, not it AND the 0.5° cut."""
+    if not idxs:
+        return idxs
+    lo = min(float(angles[i]) for i in idxs)
+    return [i for i in idxs if float(angles[i]) <= lo + LOW_SWEEP_TOL]
 MAX_FRAMES = 60          # safety cap on rendered sweeps
 N_PROC = max(1, min(2, os.cpu_count() or 1))   # decode workers (CPU-bound)
 
@@ -328,7 +339,6 @@ def _prune_chunk_cache(max_age_s=7200):
         pass
 
 
-CHUNK_SITES = {"KILX"}        # sites on the low-latency chunk feed
 _CHUNK_FRAMES = {}            # (site, vol) -> dict(n, complete, frames)
 _CHUNK_DEAL = {}              # (site, vol) -> dealiased frames (complete vols)
 
@@ -361,6 +371,7 @@ def dealias_volume_file(path, vol_label):
 
     cands = [s for s in range(radar.nsweeps)
              if fixed[s] < ELEV_MAX and _has(s, "velocity")]
+    cands = _lowest_sweep_idx(fixed, cands)
     if not cands:
         return frames
     try:
@@ -799,6 +810,11 @@ def _tree_to_frames(dtree, vol, cfgs):
         has_v = "VRADH" in ds and bool(np.isfinite(ds["VRADH"].values).any())
         sweeps.append(dict(name=name, ds=ds, el=el, has_v=has_v,
                            t=_np_dt(ds["time"].values.min())))
+    # show only the lowest-elevation cut: a radar that scans below 0.5° (e.g.
+    # KBUF) shows just that sweep, not it AND the 0.5° cut
+    if sweeps:
+        _lo = min(s["el"] for s in sweeps)
+        sweeps = [s for s in sweeps if s["el"] <= _lo + LOW_SWEEP_TOL]
 
     out = {}
     for fname, cfg in cfgs.items():
@@ -854,6 +870,7 @@ def dealias_volume(bucket, key, dest_dir):
 
     cands = [s for s in range(radar.nsweeps)
              if fixed[s] < ELEV_MAX and _has(s, "velocity")]
+    cands = _lowest_sweep_idx(fixed, cands)
     if not cands:
         return frames
     try:  # MPDA: keep highest-Nyquist cut per cluster
@@ -922,6 +939,7 @@ def _process_pyart(path, key, cfgs):
         return not np.all(np.ma.getmaskarray(radar.get_field(sweep, f)))
 
     lows = [s for s in range(radar.nsweeps) if fixed[s] < ELEV_MAX]
+    lows = _lowest_sweep_idx(fixed, lows)
     for fname, cfg in cfgs.items():
         if cfg["pyart"] not in radar.fields:
             continue
@@ -1508,7 +1526,7 @@ const SITE_ID = "__SITE__";
 // reflect the loaded radar site in the browser tab title (the tab shows the
 // top document's title; the bundle is same-origin with the app page)
 try { parent.document.title =
-        SITE_ID + " \\u00b7 NEXRAD Level 2 \\u2014 0.5\\u00b0 browser"; }
+        SITE_ID + " \\u00b7 NEXRAD Level 2 low level sweep browser"; }
 catch (e) { try { document.title = SITE_ID; } catch (e2) {} }
 const SHARE_BASE = "__SHAREBASE__";
 const QUADF = "All fields (4-panel)";
@@ -1618,7 +1636,11 @@ function makePanel(fd, first){
   const cb = fd.cbar;
   paintCbar(cb);
   // map (zoom control on all; CSS shows it only on the first visible panel)
-  const map = L.map(mdiv, {center:SITE, zoom:7, zoomControl:true,
+  // open directly at the share-link view (if any) so the map doesn't visibly
+  // animate from a default zoom up to the requested one
+  const _iv0 = (INIT_VIEW && INIT_VIEW.length === 3) ? INIT_VIEW : null;
+  const map = L.map(mdiv, {center: _iv0 ? [_iv0[0], _iv0[1]] : SITE,
+                           zoom: _iv0 ? _iv0[2] : 8, zoomControl:true,
                            attributionControl:first});
   // city labels pane (canvas) above overlays, below warnings
   map.createPane('citypane');
@@ -1768,6 +1790,7 @@ function makePanel(fd, first){
   }
   function requestDraw(){ if(!raf) raf=requestAnimationFrame(draw); }
   map.on('move zoom zoomend moveend resize viewreset', requestDraw);
+  map.on('moveend zoomend', syncURL);   // keep the address bar in sync with view
   function setData(nf){
     st.fd = nf; texCache = {};
     chip.textContent = nf.name;
@@ -1853,6 +1876,7 @@ function setMode(m){
     panels.forEach(p=>{ p.map.invalidateSize(false); p.requestDraw(); });
     if (idx >= 0) refreshLabel(idx);
     if (sitesOn) drawSites();
+    syncURL();   // field/mode changed -> update the address bar
   }, 60);
 }
 
@@ -1862,10 +1886,10 @@ setTimeout(function(){
   panels.forEach(p=>p.map.invalidateSize(false));
   const vis = panels.find(p=>p.wrap.style.display !== 'none') || panels[0];
   if (INIT_VIEW && INIT_VIEW.length === 3) {
-    vis.map.setView([INIT_VIEW[0], INIT_VIEW[1]], INIT_VIEW[2]);
+    vis.map.setView([INIT_VIEW[0], INIT_VIEW[1]], INIT_VIEW[2], {animate:false});
     return;
   }
-  vis.map.setView(SITE, 8);   // default zoom on load
+  vis.map.setView(SITE, 8, {animate:false});   // default zoom on load
 }, 90);
 
 // controls
@@ -1912,7 +1936,10 @@ document.addEventListener('keydown', e=>{
   if(e.key==='ArrowRight') show(Math.min(idx+1,nmax-1));
   if(e.key==='ArrowLeft') show(Math.max(idx-1,0));
 });
-document.getElementById('share').addEventListener('click', ()=>{
+// build a URL capturing the current display state (site/mode/time come from
+// SHARE_BASE; here we add the visible field + map center/zoom + dealias). With
+// full=true, prepend the app origin/path so it's an openable link.
+function curStateURL(full){
   const vis = panels.find(p=>p.wrap.style.display !== 'none') || panels[0];
   const c = vis.map.getCenter(), z = vis.map.getZoom();
   let url = SHARE_BASE + '&field=' +
@@ -1920,15 +1947,26 @@ document.getElementById('share').addEventListener('click', ()=>{
     '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4) + '&zoom=' + z;
   const ckd = document.getElementById('ck-dealias');
   if (ckd && ckd.checked) url += '&dealias=1';
-  // SHARE_BASE is a bare query (?...) when the server didn't know the Space
-  // host (always so in live mode) — prepend the app's origin+path so the
-  // copied link is a full, openable URL
-  if (!/^https?:/i.test(url)){
+  // SHARE_BASE is a bare query (?...) when the server didn't know the Space host
+  // (always so in live mode) — prepend the app origin+path for an openable link
+  if (full && !/^https?:/i.test(url)){
     let base = '';
     try { base = parent.location.origin + parent.location.pathname; }
     catch (e) { base = location.origin + location.pathname; }
     url = base + url;
   }
+  return url;
+}
+// keep the browser address bar reflecting the current display so it can be
+// copied/bookmarked at any time (replaceState adds no history entries)
+function syncURL(){
+  try { parent.history.replaceState(null, '', curStateURL(false)); }
+  catch (e) {
+    try { history.replaceState(null, '', curStateURL(false)); } catch (e2) {}
+  }
+}
+document.getElementById('share').addEventListener('click', ()=>{
+  const url = curStateURL(true);
   const done=()=>{const t=document.getElementById('toast');
     t.style.display='block'; setTimeout(()=>t.style.display='none',1600);};
   if(navigator.clipboard&&navigator.clipboard.writeText)
@@ -2074,7 +2112,7 @@ function applyDeal(on){
     vPanel.setData(RAWV);
   }
 }
-ckDeal.addEventListener('change', e=>applyDeal(e.target.checked));
+ckDeal.addEventListener('change', e=>{ applyDeal(e.target.checked); syncURL(); });
 if (INIT_DEAL && DEAL && DEAL.frames.length){
   ckDeal.checked = true; applyDeal(true);
 }
@@ -3142,18 +3180,19 @@ def _rt_keys(site):
 _RT_CACHE = {}        # site -> dict(ts, tpl, by_field, site_ll, has_deal)
 _RT_TTL = 150         # seconds — refresh cadence is 300 s
 
-# sites with a recent live viewer -> (last_request_ts, want_deal). A background
-# daemon keeps these refreshed so ingest never depends on a browser tab driving
-# the client timer (backgrounded tabs freeze their timers).
-_LIVE_ACTIVE = {}
-_LIVE_ACTIVE_TTL = 20 * 60   # keep polling a site for 20 min after last view
+# WSR-88D radars covering Illinois. A background daemon keeps ONLY these warm so
+# their live view (and ?site=XXXX&live=1 deep-links) load instantly, regardless
+# of any browser tab. Every other site still works in live mode on demand (chunk
+# feed + archive fallback) -- it's just decoded when requested, not polled.
+# Trim/extend to taste; more sites = more steady CPU on the Space.
+POLL_SITES = ("KILX", "KLOT", "KLSX", "KDVN", "KVWX", "KPAH")
 
 
 def _realtime_compute(site, field_name, _p, view, want_deal=False):
     """Decode the trailing hour. Short-lived cache + in-flight dedup keep
     reloads and concurrent viewers from re-decoding live data. Dealiasing
     is supported: the cached raw decode is upgraded in place."""
-    ttl = 45 if site in CHUNK_SITES else _RT_TTL
+    ttl = 45   # live caches briefly; the chunk decode is incremental/cheap
     c = _RT_CACHE.get(site)
     fresh = c and time_mod.time() - c["ts"] < ttl
     if fresh and (not want_deal or c["has_deal"]):
@@ -3273,12 +3312,12 @@ def _realtime_chunks_inner(site, field_name, _p, view, want_deal=False):
 
 
 def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
-    if site in CHUNK_SITES:
-        try:
-            return _realtime_chunks_inner(site, field_name, _p, view,
-                                          want_deal)
-        except Exception:
-            pass   # fall back to the archive-bucket live path below
+    # Every site can use the low-latency chunk feed; fall back to the archive
+    # bucket's latest volumes only when a site has no current chunks.
+    try:
+        return _realtime_chunks_inner(site, field_name, _p, view, want_deal)
+    except Exception:
+        pass   # fall back to the archive-bucket live path below
     _p(0.02, f"Listing the last 60 minutes for {site}…")
     bucket, keys, now = _rt_keys(site)
     if not keys:
@@ -3335,7 +3374,7 @@ def _rt_finish(site, field_name, _p, view, want_deal, by_field, site_ll):
     if site_ll is None or not any(by_field.values()):
         return _msg(f"Could not decode any live data from {site}.")
     _p(0.96, "Packing live bundle…")
-    rtsec = 120 if site in CHUNK_SITES else 300
+    rtsec = 120   # how often the live bundle self-refreshes in the browser (s)
     tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
                             f"?site={site}&rt=1", rt_refresh_s=rtsec)
     _write_live(site, by_field)   # refresh the in-place poll file
@@ -3362,9 +3401,6 @@ def browse(site, field_name, year, month, day, hour, progress=None,
             return _msg("Pick a NEXRAD site (e.g. KTLX, KILX, PHWA).")
         site = m.group(1).upper()
         if realtime:
-            # remember this site so the background poller keeps it fresh even
-            # if the client timer stops (inactive/backgrounded tab)
-            _LIVE_ACTIVE[site] = (time_mod.time(), bool(want_deal))
             return _realtime_compute(site, field_name, _p, view, want_deal)
         try:
             date = dt.date(int(year), int(month), int(day))
@@ -3720,7 +3756,7 @@ HEADER_HTML = f"""
 <div style="display:flex;align-items:center;gap:10px">
   {LOGO_HTML}
   <div>
-    <h1>NEXRAD Level 2 — 0.5° sweep browser</h1>
+    <h1>NEXRAD Level 2 low level sweep browser</h1>
     <p style="color:#C8C6C7;font-size:12px;margin:1px 0">
       Brought to you by the
       <a href="https://climas.illinois.edu" target="_blank"
@@ -3820,11 +3856,11 @@ addEventListener('DOMContentLoaded', function () {{
 
 gr.set_static_paths(paths=[VOL_CACHE_DIR])   # serves warnings.json
 
-with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
+with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
                theme=ILLINI_THEME, css=ILLINI_CSS) as demo:
     gr.HTML(HEADER_HTML)
     with gr.Row(elem_id="ctrl-row"):
-        mode_sw = gr.Radio(["Archive", "Live"], value="Archive",
+        mode_sw = gr.Radio(["Archive", "Live"], value="Live",
                            label="Mode", scale=1, min_width=172,
                            elem_id="mode-sw")
         site_tb = gr.Dropdown(SITE_CHOICES, value="KILX", label="Site",
@@ -3845,7 +3881,8 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         with gr.Column(scale=1, min_width=150):
             go = gr.Button("Load hour", variant="primary")
             dl = gr.DownloadButton("Download raw (.zip)",
-                                   interactive=False, size="sm")
+                                   interactive=False, size="sm",
+                                   elem_id="dlbtn")
             # hidden trigger: the in-map "Dealias V" checkbox clicks this
             # via parent.document when the hour hasn't been dealiased yet
             dax = gr.Button("Dealias velocity", elem_id="dax-trigger",
@@ -3860,7 +3897,21 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
             site_jump = gr.Textbox(elem_id="site-jump")
             sgo = gr.Button("Go site", elem_id="site-go", size="sm")
     status = gr.Markdown()
-    map_html = gr.HTML(elem_id="map-html")
+    # Immediate loading state so opening the page (or a deep-link) shows feedback
+    # right away; maybe_browse() replaces this with the radar bundle, and the
+    # gr.Progress tracker overlays the decode steps on top of it.
+    _LOADING = (
+        "<div style='display:flex;align-items:center;justify-content:center;"
+        "gap:12px;height:calc(100vh - 170px);min-height:340px;color:#9fb0c3;"
+        "background:#0b1220;font:600 17px system-ui,-apple-system,Segoe UI,"
+        "Roboto,sans-serif;'>"
+        "<span style='width:20px;height:20px;border:3px solid #3b82f6;"
+        "border-top-color:transparent;border-radius:50%;display:inline-block;"
+        "animation:nxspin .8s linear infinite'></span>"
+        "Loading live radar…"
+        "<style>@keyframes nxspin{to{transform:rotate(360deg)}}</style></div>"
+    )
+    map_html = gr.HTML(_LOADING, elem_id="map-html")
 
     shared = gr.State(False)
     view_st = gr.State(None)
@@ -3980,7 +4031,7 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         "· radar processing by [Py-ART](https://arm-doe.github.io/pyart/) "
         "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
         "· velocity dealiasing by the Rust region-based dealiaser "
-        "[region-dealias](https://github.com/swnesbitt/region-dealias) "
+        "[region-dealias](https://github.com/swnesbitt/region-dealias) (S. Nesbitt) "
         "· colormaps from [cmweather](https://github.com/openradar/cmweather) "
         "and [CMasher](https://cmasher.readthedocs.io) "
         "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
@@ -3990,8 +4041,15 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
     def init_values(request: gr.Request):
         """Fast: restore dropdown values (and map view) from URL params."""
         q = dict(request.query_params) if request else {}
+        # A plain visit (no query params) defaults to LIVE KILX. Deep-link a live
+        # site with ?site=KTLX&live=1  (live=1 is an alias for rt=1); use
+        # ?live=0 / ?rt=0 to force Archive. Archive share links carry site+time
+        # params (no live flag) and so stay in Archive as before.
+        plain = not q
         deal = q.get("dealias") == "1"
-        rt = q.get("rt") == "1"
+        rt = plain or q.get("rt") == "1" or q.get("live") == "1"
+        if q.get("rt") == "0" or q.get("live") == "0":
+            rt = False
         view = None
         try:
             if "lat" in q and "lon" in q and "zoom" in q:
@@ -4042,25 +4100,42 @@ with gr.Blocks(title="NEXRAD Level 2 — 0.5° browser", head=OG_HEAD,
         [status, map_html, dl], show_progress_on=map_html,
     )
 
+    # hover tooltip on the disabled Download button explaining raw .zip export is
+    # Archive-only (it's disabled in Live mode)
+    demo.load(None, None, None, js="""() => {
+      const TIP = "Raw .zip download isn't available in Live mode \\u2014 switch to Archive to download a volume.";
+      const upd = () => {
+        const host = document.querySelector('#dlbtn');
+        if (!host) return;
+        const btn = host.matches('button,a') ? host : (host.querySelector('button,a') || host);
+        const off = (btn && (btn.disabled || getComputedStyle(btn).pointerEvents === 'none'))
+                    || host.classList.contains('disabled');
+        if (off) { host.title = TIP; if (btn) btn.title = TIP; }
+        else { host.removeAttribute('title'); if (btn) btn.removeAttribute('title'); }
+      };
+      try { new MutationObserver(upd).observe(document.body,
+            {subtree:true, attributes:true, childList:true}); } catch (e) {}
+      setInterval(upd, 800); upd();
+    }""")
+
 def _live_poller():
-    """Keep live_<site>.json current for recently-viewed live sites regardless
-    of any browser tab (client timers freeze when a tab is backgrounded). Calls
-    _realtime_compute directly so it does NOT refresh the activity timestamp —
-    sites age out _LIVE_ACTIVE_TTL after the last real view."""
+    """Keep the Illinois-area radars (POLL_SITES) warm in the background so their
+    live view and ?site=XXXX&live=1 deep-links load fast, independent of any
+    browser tab. Every other site is decoded on demand only.
+
+    Gentle on the free 2-vCPU Space: wait for the app to finish booting and serve
+    its first requests, then warm one site at a time with a gap between, so live
+    user requests interleave instead of queueing behind a burst of six decodes."""
     noop = lambda *a, **k: None
+    time_mod.sleep(45)             # let the app boot + serve first visitors
     while True:
-        try:
-            now = time_mod.time()
-            active = [(s, d) for s, (ts, d) in list(_LIVE_ACTIVE.items())
-                      if now - ts < _LIVE_ACTIVE_TTL]
-            for s, deal in active:
-                try:
-                    _realtime_compute(s, "Reflectivity", noop, None, deal)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        time_mod.sleep(60)
+        for s in POLL_SITES:
+            try:
+                _realtime_compute(s, "Reflectivity", noop, None, False)
+            except Exception:
+                pass
+            time_mod.sleep(10)    # spread the load; yield CPU to user requests
+        time_mod.sleep(30)
 
 
 def start_background():
@@ -4068,8 +4143,13 @@ def start_background():
     out of module import so that (a) ProcessPoolExecutor workers, which re-import
     this module under the macOS 'spawn' start method, don't relaunch the daemons
     (or recurse), and (b) the desktop launcher can start them explicitly."""
-    # pre-render the default case at startup so first visitors get it instantly
-    threading.Thread(target=lambda: browse(*DEFAULT_VIEW), daemon=True).start()
+    # warm the default page (LIVE KILX) at startup so first visitors get it
+    # instantly; browse(realtime=True) also registers KILX with the live poller
+    # so it stays fresh. (year/month/day/hour are ignored in realtime.)
+    threading.Thread(
+        target=lambda: browse("KILX", "Reflectivity", *DEFAULT_VIEW[2:],
+                              realtime=True),
+        daemon=True).start()
     # keep live warnings fresh for real-time mode
     threading.Thread(target=_warn_poller, daemon=True).start()
     # keep live radar frames fresh for recently-viewed sites (server-side, so it
