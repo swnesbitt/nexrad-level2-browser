@@ -1,4 +1,3 @@
-arm-pyart>=1.19
 xradar @ git+https://github.com/swnesbitt/xradar
 cmweather
 cmasher

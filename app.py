@@ -46,35 +46,23 @@ import cmasher    # noqa: F401  (registers cmr.* colormaps, e.g. cmr.fusion_r)
 import gradio as gr
 import matplotlib.pyplot as plt
 import numpy as np
-import pyart
 import xradar as xd
 from PIL import Image
 
-# Fast Rust dealiaser (region_dealias) when available; identical to pyart's
-# region-based algorithm. Falls back to pyart if it's not installed or the
-# call hits an unsupported path (e.g. ref_vel_field). See
-# github.com/swnesbitt/region-dealias
+# Velocity dealiasing: the Rust region_dealias (a port of Py-ART's region-based
+# algorithm). Used via its low-level sweep_folds() so no Py-ART Radar object —
+# and no Py-ART dependency — is needed. See github.com/swnesbitt/region-dealias
 try:
     import region_dealias as _region_dealias  # noqa: F401
     _HAVE_REGION_DEALIAS = True
 except Exception:
     _HAVE_REGION_DEALIAS = False
 
-# label shown in the progress bar so it's clear which dealiaser ran
-_DEALIAS_ENGINE = "Rust region-dealias" if _HAVE_REGION_DEALIAS else "Py-ART"
+_DEALIAS_ENGINE = "Rust region-dealias" if _HAVE_REGION_DEALIAS else "(none)"
 print(f"[region-dealias] velocity dealias engine = {_DEALIAS_ENGINE}"
       + (f" v{_region_dealias.__version__}" if _HAVE_REGION_DEALIAS else ""),
       flush=True)
 
-
-def _dealias_region_based(radar, **kwargs):
-    """region_dealias when present, else pyart; pyart fallback on NotImplemented."""
-    if _HAVE_REGION_DEALIAS:
-        try:
-            return _region_dealias.dealias_region_based(radar, **kwargs)
-        except NotImplementedError:
-            pass
-    return pyart.correct.dealias_region_based(radar, **kwargs)
 from xradar.io.backends import nexrad_level2 as _nx2
 
 # --- patch: the last LDM record's size field is negative (signed) by spec;
@@ -139,6 +127,7 @@ def _patch_og_template():
 _patch_og_template()
 
 from sites import SITES  # (icao, city, state) for all WSR-88D sites
+from nexrad_sites import NEXRAD_COORDS  # (lat, lon) per site — replaces pyart
 
 SITE_CHOICES = [(f"{icao} — {city.lower()}, {st.lower()}", icao)
                 for icao, city, st in SITES]
@@ -355,51 +344,113 @@ def _concat_chunks(paths, out_path):
     return out_path
 
 
-def dealias_volume_file(path, vol_label):
-    """Py-ART region-based dealiasing of one local archive-format file."""
-    frames = []
+def _sweep_nyquist(ds, fvar):
+    """Per-sweep Nyquist velocity (m/s). Prefer the xradar dataset's
+    nyquist_velocity; fall back to max |velocity| after masking reserved
+    codes. Clamped to a plausible WSR-88D range."""
     try:
-        radar = pyart.io.read_nexrad_archive(path)
-    except Exception:
-        return frames
-    fixed = radar.fixed_angle["data"]
-
-    def _has(sweep, f):
-        if f not in radar.fields:
-            return False
-        return not np.all(np.ma.getmaskarray(radar.get_field(sweep, f)))
-
-    cands = [s for s in range(radar.nsweeps)
-             if fixed[s] < ELEV_MAX and _has(s, "velocity")]
-    cands = _lowest_sweep_idx(fixed, cands)
-    if not cands:
-        return frames
-    try:
-        nyq = radar.instrument_parameters["nyquist_velocity"]["data"]
-        meta = []
-        for s in cands:
-            i0, i1 = radar.get_start_end(s)
-            meta.append(dict(s=s, t=sweep_datetime(radar, s),
-                             nyq=float(np.median(nyq[i0:i1 + 1]))))
-        cands = [m["s"] for m in _dedup_doppler(meta, lambda m: m["nyq"])]
+        nv = np.asarray(ds["nyquist_velocity"].values, dtype=float)
+        nv = nv[np.isfinite(nv)]
+        if nv.size:
+            n = float(np.median(nv))
+            if 5.0 <= n <= 80.0:
+                return n
     except Exception:
         pass
     try:
-        sub = radar.extract_sweeps(cands)
-        corr = _dealias_region_based(
-            sub, vel_field="velocity", keep_original=False)
-        sub.fields["velocity"]["data"] = corr["data"]
-        polar_frame._vol = vol_label
-        _vcp = radar.metadata.get("vcp_pattern")
-        polar_frame._vcp = f"VCP-{_vcp}" if _vcp else ""
-        for s in range(sub.nsweeps):
-            fr = polar_frame(sub, s, DEALIAS_CFG)
+        v = np.asarray(ds[fvar].values, dtype=np.float32)
+        rsv = _reserved_mask(ds, fvar, v)
+        if rsv is not None:
+            v = np.where(rsv, np.nan, v)
+        n = float(np.nanmax(np.abs(v)))
+        if 5.0 <= n <= 80.0:
+            return n
+    except Exception:
+        pass
+    return 0.0
+
+
+def _open_nexrad_xr(src):
+    """Open a NEXRAD Level 2 volume with the xradar fork. `src` is either a
+    local archive-format file path or a list of live chunk paths."""
+    if isinstance(src, (list, tuple)):
+        return xd.io.open_nexradlevel2_datatree(list(src),
+                                                incomplete_sweep="drop")
+    return xd.io.open_nexradlevel2_datatree(_gunzip(src))
+
+
+def _dealias_dtree(dtree, vol_label):
+    """Region-based velocity dealiasing of the lowest Doppler cut(s), Py-ART
+    free: the Rust region_dealias.sweep_folds() folds each velocity sweep
+    decoded by the xradar fork; rendered via polar_frame_xr."""
+    frames = []
+    if not _HAVE_REGION_DEALIAS:
+        return frames
+    fvar = XR_FIELD["velocity"]
+    try:
+        vcp = str(dtree.ds.attrs.get("scan_name", "") or "")
+    except Exception:
+        vcp = ""
+    sweeps = []
+    for name in sorted((c for c in dtree.children if c.startswith("sweep_")),
+                       key=lambda n: int(n.split("_")[1])):
+        ds = dtree[name].ds
+        try:
+            el = float(ds["sweep_fixed_angle"].values)
+        except Exception:
+            continue
+        if el >= ELEV_MAX or fvar not in ds:
+            continue
+        if not np.isfinite(ds[fvar].values).any():
+            continue
+        sweeps.append(dict(name=name, ds=ds, el=el,
+                           t=_np_dt(ds["time"].values.min())))
+    if not sweeps:
+        return frames
+    _lo = min(s["el"] for s in sweeps)              # lowest cut only
+    sweeps = [s for s in sweeps if s["el"] <= _lo + LOW_SWEEP_TOL]
+    # MPDA (VCP 121): keep the highest-Nyquist member of each cluster
+    sweeps = _dedup_doppler(sweeps, lambda s: _sweep_nyquist(s["ds"], fvar))
+    for s in sweeps:
+        ds = s["ds"]
+        try:
+            v = np.asarray(ds[fvar].values, dtype=np.float32)
+            nyq = _sweep_nyquist(ds, fvar)
+            if not (5.0 <= nyq <= 80.0):
+                continue
+            rsv = _reserved_mask(ds, fvar, v)
+            mask = ~np.isfinite(v)
+            if rsv is not None:
+                mask = mask | rsv
+            folds = _region_dealias.sweep_folds(
+                v, mask, float(nyq), rays_wrap_around=True)
+            vdeal = np.where(mask, np.nan, v + folds * (2.0 * nyq))
+            ds2 = ds.copy()
+            ds2[fvar] = ds2[fvar].copy(data=vdeal)
+            ds2[fvar].encoding = {}   # dealiased = physical m/s; no code mask
+            fr = polar_frame_xr(ds2, fvar, DEALIAS_CFG, s["el"],
+                                s["name"], vol_label, vcp)
             if fr is not None:
                 frames.append(fr)
-    except Exception:
-        pass
-    del radar
+        except Exception:
+            continue
     return frames
+
+
+def dealias_volume_file(src, vol_label):
+    """Region-dealias one volume — a local archive file path OR a list of live
+    chunk paths — with the xradar fork + Rust region_dealias (no Py-ART)."""
+    try:
+        dtree = _open_nexrad_xr(src)
+    except Exception:
+        return []
+    try:
+        return _dealias_dtree(dtree, vol_label)
+    finally:
+        try:
+            del dtree
+        except Exception:
+            pass
 
 
 # ---- live warnings (real-time mode) ----------------------------------------
@@ -424,13 +475,12 @@ CITIES_URL = "/gradio_api/file=" + CITIES_JSON
 # TDWR terminal radars (no Level 2 archive). Served like cities.json.
 SITES_JSON = os.path.join(VOL_CACHE_DIR, "sites.json")
 try:
-    from pyart.io.nexrad_common import NEXRAD_LOCATIONS as _NX_LOC
     _sites = []
     for _icao, _city, _st in SITES:
-        v = _NX_LOC.get(_icao)
-        if v and "lat" in v and "lon" in v:
-            _sites.append([_icao, round(float(v["lat"]), 4),
-                           round(float(v["lon"]), 4)])
+        v = NEXRAD_COORDS.get(_icao)
+        if v:
+            _sites.append([_icao, round(float(v[0]), 4),
+                           round(float(v[1]), 4)])
     _sites.sort()
     with open(SITES_JSON, "w") as _f:
         json.dump(_sites, _f)
@@ -853,56 +903,17 @@ def _tree_to_frames(dtree, vol, cfgs):
 
 
 def dealias_volume(bucket, key, dest_dir):
-    """Region-based dealiasing of the volume's 0.5° Doppler cuts (Py-ART).
-    Returns a list of frames for the dealiased-velocity field."""
-    frames = []
+    """Download a volume and region-dealias its lowest Doppler cut(s)
+    (xradar fork + Rust region_dealias; no Py-ART)."""
     try:
         path = download_volume(bucket, key, dest_dir)
-        radar = pyart.io.read_nexrad_archive(path)
     except Exception:
-        return frames
-    fixed = radar.fixed_angle["data"]
-
-    def _has(sweep, f):
-        if f not in radar.fields:
-            return False
-        return not np.all(np.ma.getmaskarray(radar.get_field(sweep, f)))
-
-    cands = [s for s in range(radar.nsweeps)
-             if fixed[s] < ELEV_MAX and _has(s, "velocity")]
-    cands = _lowest_sweep_idx(fixed, cands)
-    if not cands:
-        return frames
-    try:  # MPDA: keep highest-Nyquist cut per cluster
-        nyq = radar.instrument_parameters["nyquist_velocity"]["data"]
-        meta = []
-        for s in cands:
-            i0, i1 = radar.get_start_end(s)
-            meta.append(dict(s=s, t=sweep_datetime(radar, s),
-                             nyq=float(np.median(nyq[i0:i1 + 1]))))
-        cands = [m["s"] for m in _dedup_doppler(meta, lambda m: m["nyq"])]
-    except Exception:
-        pass
-    try:
-        sub = radar.extract_sweeps(cands)
-        corr = _dealias_region_based(
-            sub, vel_field="velocity", keep_original=False)
-        sub.fields["velocity"]["data"] = corr["data"]
-        polar_frame._vol = os.path.basename(key)
-        _vcp = radar.metadata.get("vcp_pattern")
-        polar_frame._vcp = f"VCP-{_vcp}" if _vcp else ""
-        for s in range(sub.nsweeps):
-            fr = polar_frame(sub, s, DEALIAS_CFG)
-            if fr is not None:
-                frames.append(fr)
-    except Exception:
-        pass
-    del radar
-    return frames
+        return []
+    return dealias_volume_file(path, os.path.basename(key))
 
 
 def process_volume(bucket, key, cfgs, dest_dir):
-    """Download + read one volume (xradar fork first, Py-ART fallback).
+    """Download + read one volume with the xradar fork (sole reader).
     Decodes every requested field in a single read; raw files stay cached."""
     empty = {fn: [] for fn in cfgs}
     try:
@@ -912,62 +923,10 @@ def process_volume(bucket, key, cfgs, dest_dir):
     try:
         return _process_xradar(path, key, cfgs)
     except Exception:
-        pass  # fall back to Py-ART below
-    try:
-        return _process_pyart(path, key, cfgs)
-    except Exception:
         return empty, None
 
 
-def _process_pyart(path, key, cfgs):
-    """Fallback reader via Py-ART."""
-    out = {fn: [] for fn in cfgs}
-    try:
-        radar = pyart.io.read_nexrad_archive(path, delay_field_loading=True)
-    except Exception:
-        return out, None
-    site_ll = (float(radar.latitude["data"][0]),
-               float(radar.longitude["data"][0]))
-    fixed = radar.fixed_angle["data"]
-    polar_frame._vol = os.path.basename(key)
-    _vcp = radar.metadata.get("vcp_pattern")
-    polar_frame._vcp = f"VCP-{_vcp}" if _vcp else ""
-
-    def _has(sweep, f):
-        if f not in radar.fields:
-            return False
-        return not np.all(np.ma.getmaskarray(radar.get_field(sweep, f)))
-
-    lows = [s for s in range(radar.nsweeps) if fixed[s] < ELEV_MAX]
-    lows = _lowest_sweep_idx(fixed, lows)
-    for fname, cfg in cfgs.items():
-        if cfg["pyart"] not in radar.fields:
-            continue
-        cands = [s for s in lows if _has(s, cfg["pyart"])]
-        if cfg["pyart"] != "velocity":
-            surv = [s for s in cands if not _has(s, "velocity")]
-            cands = surv or cands
-        else:
-            try:
-                nyq = radar.instrument_parameters["nyquist_velocity"]["data"]
-                meta = []
-                for s in cands:
-                    i0, i1 = radar.get_start_end(s)
-                    meta.append(dict(s=s, t=sweep_datetime(radar, s),
-                                     nyq=float(np.median(nyq[i0:i1 + 1]))))
-                cands = [m["s"] for m in
-                         _dedup_doppler(meta, lambda m: m["nyq"])]
-            except Exception:
-                pass
-        for sweep in cands:
-            try:
-                fr = polar_frame(radar, sweep, cfg)
-            except Exception:
-                continue
-            if fr is not None:
-                out[fname].append(fr)
-    del radar
-    return out, site_ll
+# (Py-ART fallback reader removed — the xradar fork is the sole ingest path)
 
 
 # ----------------------------------------------------------------------------- leaflet + webgl page
@@ -3280,9 +3239,7 @@ def _realtime_chunks_inner(site, field_name, _p, view, want_deal=False):
             with _DECODE_SEM:
                 with ProcessPoolExecutor(max_workers=N_PROC) as px:
                     futs = {px.submit(
-                        dealias_volume_file,
-                        _concat_chunks(v["paths"], os.path.join(
-                            CHUNK_DIR, site, str(v["vol"]), "volume.bin")),
+                        dealias_volume_file, v["paths"],
                         "live vol %d" % v["vol"]): v for v in grp}
                     for fut in as_completed(futs):
                         v = futs[fut]
@@ -3364,13 +3321,9 @@ def _rt_finish(site, field_name, _p, view, want_deal, by_field, site_ll):
     if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
         site_ll = None
     if site_ll is None:
-        try:
-            from pyart.io.nexrad_common import NEXRAD_LOCATIONS
-            loc = NEXRAD_LOCATIONS.get(site)
-            if loc:
-                site_ll = (loc["lat"], loc["lon"])
-        except Exception:
-            pass
+        loc = NEXRAD_COORDS.get(site)
+        if loc:
+            site_ll = (loc[0], loc[1])
     if site_ll is None or not any(by_field.values()):
         return _msg(f"Could not decode any live data from {site}.")
     _p(0.96, "Packing live bundle…")
@@ -3536,13 +3489,9 @@ def _browse_compute(site, field_name, date, hr, _p):
         if site_ll is not None and abs(site_ll[0]) < 0.1 and abs(site_ll[1]) < 0.1:
             site_ll = None
         if site_ll is None:
-            try:
-                from pyart.io.nexrad_common import NEXRAD_LOCATIONS
-                loc = NEXRAD_LOCATIONS.get(site)
-                if loc:
-                    site_ll = (loc["lat"], loc["lon"])
-            except Exception:
-                pass
+            loc = NEXRAD_COORDS.get(site)
+            if loc:
+                site_ll = (loc[0], loc[1])
 
         if site_ll is None or not any(by_field.values()):
             return _msg(
@@ -4043,10 +3992,10 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
     gr.Markdown(
         "Level 2 decoding by [xradar](https://github.com/swnesbitt/xradar) "
         "(openradar; S. Nesbitt fork) "
-        "· radar processing by [Py-ART](https://arm-doe.github.io/pyart/) "
-        "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
         "· velocity dealiasing by the Rust region-based dealiaser "
-        "[region-dealias](https://github.com/swnesbitt/region-dealias) (S. Nesbitt) "
+        "[region-dealias](https://github.com/swnesbitt/region-dealias) (S. Nesbitt), "
+        "a port of [Py-ART](https://arm-doe.github.io/pyart/)'s algorithm "
+        "(Helmus & Collis 2016, [doi:10.5334/jors.119](https://doi.org/10.5334/jors.119)) "
         "· colormaps from [cmweather](https://github.com/openradar/cmweather) "
         "and [CMasher](https://cmasher.readthedocs.io) "
         "· data from the [NOAA NEXRAD Level II archive on AWS](https://registry.opendata.aws/noaa-nexrad/) "
