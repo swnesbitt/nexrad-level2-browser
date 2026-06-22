@@ -318,8 +318,10 @@ def _prune_chunk_cache(max_age_s=7200):
         pass
 
 
-CHUNK_SITES = {"KILX"}        # sites on the low-latency chunk feed
-_CHUNK_FRAMES = {}            # (site, vol) -> dict(n, complete, frames)
+CHUNK_SITES = {"KILX"}        # (vestigial) every site now uses the chunk feed
+_CHUNK_TTL = 600             # s — drop a site's decoded volumes ~10 min after
+                             # it was last viewed (every site is on chunks now)
+_CHUNK_FRAMES = {}            # (site, vol) -> dict(n, complete, frames, ts)
 _CHUNK_DEAL = {}              # (site, vol) -> dealiased frames (complete vols)
 
 
@@ -3129,7 +3131,7 @@ def _realtime_compute(site, field_name, _p, view, want_deal=False):
     """Decode the trailing hour. Short-lived cache + in-flight dedup keep
     reloads and concurrent viewers from re-decoding live data. Dealiasing
     is supported: the cached raw decode is upgraded in place."""
-    ttl = 45 if site in CHUNK_SITES else _RT_TTL
+    ttl = 45      # short-lived live cache (every site is on the chunk feed)
     c = _RT_CACHE.get(site)
     fresh = c and time_mod.time() - c["ts"] < ttl
     if fresh and (not want_deal or c["has_deal"]):
@@ -3200,11 +3202,12 @@ def _realtime_chunks_inner(site, field_name, _p, view, want_deal=False):
                         continue
                     _CHUNK_FRAMES[(site, v["vol"])] = dict(
                         n=len(v["paths"]), complete=v["complete"],
-                        frames=frames, site_ll=ll)
+                        frames=frames, site_ll=ll, ts=time_mod.time())
     for v in vols:
         cached = _CHUNK_FRAMES.get((site, v["vol"]))
         if not cached:
             continue
+        cached["ts"] = time_mod.time()    # touch -> LRU expiry by last view
         site_ll = site_ll or cached.get("site_ll")
         for fn, fr in cached["frames"].items():
             by_field[fn].extend(fr)
@@ -3226,33 +3229,43 @@ def _realtime_chunks_inner(site, field_name, _p, view, want_deal=False):
                            f"Dealiasing live volume {v['vol']} "
                            f"({dn}/{len(todo_d)}, {_DEALIAS_ENGINE})…")
                         try:
-                            _CHUNK_DEAL[(site, v["vol"])] = fut.result()
+                            _CHUNK_DEAL[(site, v["vol"])] = dict(
+                                ts=time_mod.time(), frames=fut.result())
                         except Exception:
-                            _CHUNK_DEAL[(site, v["vol"])] = []
+                            _CHUNK_DEAL[(site, v["vol"])] = dict(
+                                ts=time_mod.time(), frames=[])
         dframes = []
         for v in comp:
-            dframes.extend(_CHUNK_DEAL.get((site, v["vol"]), []))
+            d = _CHUNK_DEAL.get((site, v["vol"]))
+            if d:
+                d["ts"] = time_mod.time()
+                dframes.extend(d["frames"])
         dframes.sort(key=lambda f: f["time"])
         by_field[DEALIAS_NAME] = dframes[:MAX_FRAMES]
     for fn in by_field:
         by_field[fn].sort(key=lambda f: f["time"])
         by_field[fn] = by_field[fn][:MAX_FRAMES]
-    # bound the per-volume caches
-    for cache, cap in ((_CHUNK_FRAMES, 60), (_CHUNK_DEAL, 40)):
-        while len(cache) > cap:
+    # short-lived caches: drop volumes for sites not viewed within _CHUNK_TTL,
+    # with a hard count backstop (every site uses the chunk feed now)
+    _now = time_mod.time()
+    for cache in (_CHUNK_FRAMES, _CHUNK_DEAL):
+        for k in [k for k, vv in cache.items()
+                  if _now - vv.get("ts", 0) > _CHUNK_TTL]:
+            cache.pop(k, None)
+        while len(cache) > 80:
             cache.pop(next(iter(cache)))
-    _prune_chunk_cache()
+    _prune_chunk_cache(4800)   # files: cover the ~65-min loop window
     return _rt_finish(site, field_name, _p, view, want_deal,
                       by_field, site_ll)
 
 
 def _realtime_compute_inner(site, field_name, _p, view, want_deal=False):
-    if site in CHUNK_SITES:
-        try:
-            return _realtime_chunks_inner(site, field_name, _p, view,
-                                          want_deal)
-        except Exception:
-            pass   # fall back to the archive-bucket live path below
+    # Every site uses the low-latency chunk feed (so in-progress volumes show);
+    # fall back to the assembled-archive bucket only if a site has no chunks.
+    try:
+        return _realtime_chunks_inner(site, field_name, _p, view, want_deal)
+    except Exception:
+        pass   # fall back to the archive-bucket live path below
     _p(0.02, f"Listing the last 60 minutes for {site}…")
     bucket, keys, now = _rt_keys(site)
     if not keys:
@@ -3305,7 +3318,7 @@ def _rt_finish(site, field_name, _p, view, want_deal, by_field, site_ll):
     if site_ll is None or not any(by_field.values()):
         return _msg(f"Could not decode any live data from {site}.")
     _p(0.96, "Packing live bundle…")
-    rtsec = 120 if site in CHUNK_SITES else 300
+    rtsec = 120   # in-browser live self-refresh cadence (s)
     tpl = build_bundle_page(by_field, site, site_ll[0], site_ll[1],
                             f"?site={site}&rt=1", rt_refresh_s=rtsec)
     _write_live(site, by_field)   # refresh the in-place poll file
