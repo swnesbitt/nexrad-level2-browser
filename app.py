@@ -3877,7 +3877,21 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
         "Loading live radar…"
         "<style>@keyframes nxspin{to{transform:rotate(360deg)}}</style></div>"
     )
-    map_html = gr.HTML(_LOADING, elem_id="map-html")
+    # Plain-visit landing: a light prompt instead of auto-rendering the heavy
+    # full live bundle (which can freeze the browser on the free tier). The
+    # user clicks Load; deep-links (?site=...&rt=1) still auto-load below.
+    _LANDING = (
+        "<div class='nx-mapfill' style='display:flex;flex-direction:column;"
+        "align-items:center;justify-content:center;gap:12px;color:#9fb0c3;"
+        "background:#0b1220;text-align:center;padding:24px;box-sizing:border-box;"
+        "font:600 16px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;'>"
+        "<div style='font-size:18px;color:#cdd8e6'>Live radar &mdash; KILX</div>"
+        "<div style='font-weight:400;font-size:14px;max-width:30em;line-height:1.5'>"
+        "Click <b>Load hour</b> above to load the latest live scan, or pick "
+        "another site (switch to Archive for a past date). One click keeps the "
+        "page fast.</div></div>"
+    )
+    map_html = gr.HTML(_LANDING, elem_id="map-html")
 
     shared = gr.State(False)
     view_st = gr.State(None)
@@ -4042,10 +4056,14 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
                 ("site" in q or "year" in q), view, deal,
                 "Live" if rt else "Archive")
 
-    def maybe_browse(mode, view, deal, site, field, year, month, day,
+    def maybe_browse(shared, mode, view, deal, site, field, year, month, day,
                      hour, progress=gr.Progress()):
-        """Slow: auto-load on every visit — the default case on a plain
-        visit, the shared view (incl. map center/zoom) when params exist."""
+        """Auto-load ONLY for deep-links (shared views with site/time/live
+        params). A plain visit keeps the light landing and decodes nothing —
+        rendering the full live bundle on initial page load is too heavy for
+        the free tier and can freeze the browser. The user clicks Load."""
+        if not shared:
+            return "", _LANDING, gr.DownloadButton(interactive=False)
         rt = (mode == "Live")
         info, page = browse(site, field, year, month, day, hour,
                             progress=progress, view=view, want_deal=deal,
@@ -4059,8 +4077,8 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
          view_st, deal_st, mode_sw],
     ).then(
         maybe_browse,
-        [mode_sw, view_st, deal_st, site_tb, field_dd, year_dd, month_dd,
-         day_dd, hour_dd],
+        [shared, mode_sw, view_st, deal_st, site_tb, field_dd, year_dd,
+         month_dd, day_dd, hour_dd],
         [status, map_html, dl], show_progress_on=map_html,
     )
 
