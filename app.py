@@ -2506,8 +2506,10 @@ async function exportQuad(kind, w, h){
   const cm = PROJ.project(map.getCenter());
   const e1 = PROJ.project(map.containerPointToLatLng([0, sz.y/2]));
   const e2 = PROJ.project(map.containerPointToLatLng([sz.x, sz.y/2]));
-  const mercH = Math.abs(e2.x-e1.x) * (sz.y/sz.x);
-  const mercW = mercH * (qw/qh);
+  const _ws = Math.abs(e2.x-e1.x), _hs = _ws*(sz.y/sz.x), _ar = qw/qh;
+  let mercW, mercH;
+  if (_ar >= _ws/_hs) { mercH = _hs; mercW = _hs*_ar; }
+  else                { mercW = _ws; mercH = _ws/_ar; }
   const win = {x0: cm.x-mercW/2, x1: cm.x+mercW/2,
                y0: cm.y-mercH/2, y1: cm.y+mercH/2};
 
@@ -2680,8 +2682,10 @@ async function exportZV(kind, w, h){
   const cm = PROJ.project(map.getCenter());
   const e1 = PROJ.project(map.containerPointToLatLng([0, sz.y/2]));
   const e2 = PROJ.project(map.containerPointToLatLng([sz.x, sz.y/2]));
-  const mercH = Math.abs(e2.x-e1.x) * (sz.y/sz.x);
-  const mercW = mercH * (qw/qh);
+  const _ws = Math.abs(e2.x-e1.x), _hs = _ws*(sz.y/sz.x), _ar = qw/qh;
+  let mercW, mercH;
+  if (_ar >= _ws/_hs) { mercH = _hs; mercW = _hs*_ar; }
+  else                { mercW = _ws; mercH = _ws/_ar; }
   const win = {x0: cm.x-mercW/2, x1: cm.x+mercW/2,
                y0: cm.y-mercH/2, y1: cm.y+mercH/2};
 
@@ -2831,8 +2835,13 @@ async function exportMedia(kind, w, h){
   const cm = PROJ.project(map.getCenter());
   const e1 = PROJ.project(map.containerPointToLatLng([0, sz.y/2]));
   const e2 = PROJ.project(map.containerPointToLatLng([sz.x, sz.y/2]));
-  const mercH = Math.abs(e2.x-e1.x) * (sz.y/sz.x);
-  const mercW = mercH * (w/h);
+  // consistent zoom: match the on-screen scale and CONTAIN the visible view
+  // (anchor on width or height by aspect) so the export neither crops nor
+  // re-zooms relative to what's on screen.
+  const _ws = Math.abs(e2.x-e1.x), _hs = _ws*(sz.y/sz.x), _ar = w/h;
+  let mercW, mercH;
+  if (_ar >= _ws/_hs) { mercH = _hs; mercW = _hs*_ar; }
+  else                { mercW = _ws; mercH = _ws/_ar; }
   const win = {x0: cm.x-mercW/2, x1: cm.x+mercW/2,
                y0: cm.y-mercH/2, y1: cm.y+mercH/2};
 
@@ -3812,9 +3821,10 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
         hour_dd = gr.Dropdown(HOURS, value="18:00", label="Hour (UTC)",
                               scale=1, min_width=84)
         with gr.Column(scale=1, min_width=150):
-            go = gr.Button("Load hour", variant="primary")
+            go = gr.Button("Go", variant="primary")
             dl = gr.DownloadButton("Download raw (.zip)",
-                                   interactive=False, size="sm")
+                                   interactive=False, size="sm",
+                                   visible=False)
             # hidden trigger: the in-map "Dealias V" checkbox clicks this
             # via parent.document when the hour hasn't been dealiased yet
             dax = gr.Button("Dealias velocity", elem_id="dax-trigger",
