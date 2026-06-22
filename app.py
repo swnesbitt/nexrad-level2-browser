@@ -3978,7 +3978,10 @@ with gr.Blocks(title="NEXRAD Level 2 low level sweep browser", head=OG_HEAD,
         # Only refresh the live frame file; the in-page poller merges the new
         # frames in place when ready. Crucially this has NO Gradio outputs, so
         # the display is never marked "generating"/greyed during an autoupdate.
-        if mode == "Live":
+        # Only refresh if this session has actually loaded live data for the
+        # site (it's in _RT_CACHE). On the light landing nothing is loaded, so
+        # this is a no-op — avoids background decodes that starve the server.
+        if mode == "Live" and site in _RT_CACHE:
             try:
                 browse(site, "Radial velocity" if deal else field,
                        "", "", "", "", progress=progress,
@@ -4125,24 +4128,17 @@ def start_background():
     out of module import so that (a) ProcessPoolExecutor workers, which re-import
     this module under the macOS 'spawn' start method, don't relaunch the daemons
     (or recurse), and (b) the desktop launcher can start them explicitly."""
-    # warm the default page (LIVE KILX) at startup so first visitors get it
-    # instantly; browse(realtime=True) also registers KILX with the live poller
-    # so it stays fresh. (year/month/day/hour are ignored in realtime.)
-    def _prewarm():
-        # Defer the first live decode so the app idles through HF's health
-        # check and gets promoted to the public URL before we spend CPU; the
-        # first visitor's demo.load still triggers the decode on its own.
-        time_mod.sleep(90)
-        try:
-            browse("KILX", "Reflectivity", *DEFAULT_VIEW[2:], realtime=True)
-        except Exception:
-            pass
-    threading.Thread(target=_prewarm, daemon=True).start()
-    # keep live warnings fresh for real-time mode
+    # The live-KILX prewarm and the radar poller are intentionally DISABLED on
+    # the free 2-vCPU tier: their in-process decode + PNG render hold Python's
+    # GIL and starve the gradio frontend handshake, so the page hangs on the
+    # "Loading…" screen. With them off the server stays idle and the UI loads
+    # instantly; live data loads on click (light landing) and each session's
+    # first load warms its own RT cache (the refresh timer then keeps it fresh).
+    # Re-enable these only on a larger CPU tier:
+    #   threading.Thread(target=_prewarm, daemon=True).start()
+    #   threading.Thread(target=_live_poller, daemon=True).start()
+    # keep live warnings fresh (light: network fetch + small JSON, no decode)
     threading.Thread(target=_warn_poller, daemon=True).start()
-    # keep live radar frames fresh for recently-viewed sites (server-side, so it
-    # doesn't depend on a client tab driving the refresh timer)
-    threading.Thread(target=_live_poller, daemon=True).start()
 
 
 if __name__ == "__main__":
