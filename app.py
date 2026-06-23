@@ -697,7 +697,8 @@ def polar_frame(radar, sweep, field_cfg):
     grid, naz = _regrid_az(az, vals)
 
     buf = io.BytesIO()
-    Image.fromarray(grid, mode="L").save(buf, format="PNG")
+    Image.fromarray(grid, mode="L").save(buf, format="WEBP",
+                                       lossless=True, method=4)
 
     t = sweep_datetime(radar, sweep)
     el = float(radar.fixed_angle["data"][sweep])
@@ -769,7 +770,8 @@ def polar_frame_xr(ds, fvar, field_cfg, el, sweep_name, vol, vcp=""):
     grid, naz = _regrid_az(az, vals)
 
     buf = io.BytesIO()
-    Image.fromarray(grid, mode="L").save(buf, format="PNG")
+    Image.fromarray(grid, mode="L").save(buf, format="WEBP",
+                                       lossless=True, method=4)
     t = _np_dt(ds["time"].values.min())
     vcp_part = f"{vcp}  •  " if vcp else ""
     return dict(
@@ -1166,7 +1168,7 @@ function frameTexture(i, cbk){
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     texCache[i] = t; cbk(t);
   };
-  img.src = 'data:image/png;base64,' + frames[i].img;
+  img.src = 'data:image/webp;base64,' + frames[i].img;
 }
 
 const PROJ = L.Projection.SphericalMercator;
@@ -1702,7 +1704,7 @@ function makePanel(fd, first){
         gl.texParameteri(gl.TEXTURE_2D, gl[p], gl.CLAMP_TO_EDGE));
       texCache[i] = t; cbk(t);
     };
-    img.src = 'data:image/png;base64,' + st.fd.frames[i].img;
+    img.src = 'data:image/webp;base64,' + st.fd.frames[i].img;
   }
   let raf = 0;
   function draw(){
@@ -2349,7 +2351,7 @@ function makeExportGL(w, h, cb){
   const cache = {};
   async function ensureTex(f, i){
     if (cache[i]) return;
-    const im = await loadImg('data:image/png;base64,'+f.img);
+    const im = await loadImg('data:image/webp;base64,'+f.img);
     const t = gl.createTexture();
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,t);
     gl.texImage2D(gl.TEXTURE_2D,0,gl.LUMINANCE,gl.LUMINANCE,
