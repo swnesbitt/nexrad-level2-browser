@@ -1306,6 +1306,9 @@ QUAD_PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
 <style>
  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&family=Source+Sans+3:wght@400;600;700&display=swap');
  :root{--io:#FF5F05;--ib:#13294B;--ib2:#1D3866;--ib3:#25457F;--sl:#C8C6C7}
@@ -1546,6 +1549,30 @@ const PROJ = L.Projection.SphericalMercator;
 let opacity = 1.0, idx = -1, playing = false, timer = null, syncing = false;
 const panels = [];
 
+// ---- basemap: CARTO Voyager vector (MapLibre GL), raster Voyager fallback
+const VSTYLE = '__VSTYLE__', CKEY = '__CARTOKEY__';
+let _vstyleP = null;
+function vectorStyle(){
+  if (!_vstyleP) _vstyleP = fetch(VSTYLE).then(r=>{ if(!r.ok) throw r.status;
+      return r.json(); })
+    .then(st=>{ st.layers = st.layers.filter(l=>l.type!=='symbol'); return st; });
+  return _vstyleP;
+}
+function addBasemap(map){
+  const raster = ()=>L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png',
+    {attribution:'&copy; OSM &copy; CARTO', subdomains:'abcd', maxZoom:14})
+    .addTo(map);
+  if (!(window.maplibregl && L.maplibreGL)) { raster(); return; }
+  vectorStyle().then(st=>{
+    L.maplibreGL({style:st, interactive:false,
+      attribution:'&copy; OSM &copy; CARTO',
+      transformRequest:(url)=>({url:(CKEY && /cartocdn\\.com/.test(url) &&
+        !/[?&]key=/.test(url)) ? url+(url.includes('?')?'&':'?')+'key='+CKEY
+        : url})}).addTo(map);
+  }).catch(()=>raster());
+}
+
 function makePanel(fd, first){
   const wrap = document.createElement('div'); wrap.className = 'panel';
   document.getElementById('grid').appendChild(wrap);
@@ -1627,9 +1654,9 @@ function makePanel(fd, first){
       }
       if (!ok) continue;
       placed.push([pt.x, pt.y]); n++;
-      g.fillStyle = '#FFFFFF';
+      g.fillStyle = '#1b1b1b';
       g.beginPath(); g.arc(pt.x, pt.y, 2.4, 0, 2*Math.PI); g.fill();
-      g.lineWidth = 3; g.strokeStyle = 'rgba(7,16,32,.85)';
+      g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.9)';
       g.strokeText(c[0], pt.x+6, pt.y);
       g.fillText(c[0], pt.x+6, pt.y);
     }
@@ -1652,13 +1679,11 @@ function makePanel(fd, first){
   map.createPane('refpane');
   map.getPane('refpane').style.zIndex = 650;
   map.getPane('refpane').style.pointerEvents = 'none';
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
-    {attribution:'&copy; OSM &copy; CARTO', subdomains:'abcd', maxZoom:14})
-    .addTo(map);
-  L.circleMarker(SITE,{radius:4,color:'#fff',weight:2,fillColor:'#e33',
+  addBasemap(map);
+  L.circleMarker(SITE,{radius:4,color:'#222',weight:2,fillColor:'#e33',
     fillOpacity:1}).addTo(map).bindTooltip('__SITE__');
   const ring = L.circle(SITE,{radius:fd.frames.length?fd.frames[0].maxr:3e5,
-    color:'#fff',weight:1.2,opacity:.9,fill:false,interactive:false})
+    color:'#222',weight:1.2,opacity:.8,fill:false,interactive:false})
     .addTo(map);
   // webgl
   const gl = cv.getContext('webgl',{premultipliedAlpha:false,alpha:true});
@@ -2000,7 +2025,7 @@ document.getElementById('ck-counties').addEventListener('change', e=>{
     fetch(COUNTY_URL).then(r=>r.json()).then(gj=>{
       countyGJ = gj;
       countyLayers = panels.map(()=>L.geoJSON(gj,{pane:'refpane',style:
-        {color:'#C8C6C7',weight:0.7,opacity:1.0,fill:false}}));
+        {color:'#4a4a4a',weight:0.7,opacity:0.85,fill:false}}));
       if (document.getElementById('ck-counties').checked)
         countyLayers.forEach((l,i)=>l.addTo(panels[i].map));
       lbl.textContent='Counties';
@@ -2238,9 +2263,9 @@ function drawCitiesExport(ctx, win, w, h){
     }
     if (!ok) continue;
     placed.push([px, py]); n++;
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = '#1b1b1b';
     ctx.beginPath(); ctx.arc(px, py, fs*0.2, 0, 2*Math.PI); ctx.fill();
-    ctx.lineWidth = fs*0.25; ctx.strokeStyle = 'rgba(7,16,32,.85)';
+    ctx.lineWidth = fs*0.25; ctx.strokeStyle = 'rgba(255,255,255,.9)';
     ctx.strokeText(c[0], px+fs*0.5, py);
     ctx.fillText(c[0], px+fs*0.5, py);
   }
@@ -2251,7 +2276,7 @@ function drawCounties(ctx, win, w){
   if (!countyGJ) return;
   const mpp = (win.x1-win.x0)/w;
   ctx.save();
-  ctx.strokeStyle = '#C8C6C7'; ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = '#4a4a4a'; ctx.globalAlpha = 0.85;
   ctx.lineWidth = Math.max(1, w/2200);
   const drawRing = ring=>{
     ctx.beginPath();
@@ -2521,7 +2546,7 @@ async function exportQuad(kind, w, h){
   const base = document.createElement('canvas');
   base.width = qw; base.height = qh;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}@2x.png',
     win, qw, ['a','b','c','d']);
   const refs = document.createElement('canvas');
   refs.width = qw; refs.height = qh;
@@ -2697,7 +2722,7 @@ async function exportZV(kind, w, h){
   const base = document.createElement('canvas');
   base.width = qw; base.height = qh;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}@2x.png',
     win, qw, ['a','b','c','d']);
   const refs = document.createElement('canvas');
   refs.width = qw; refs.height = qh;
@@ -2853,7 +2878,7 @@ async function exportMedia(kind, w, h){
   const base = document.createElement('canvas');
   base.width = w; base.height = h;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}@2x.png',
     win, w, ['a','b','c','d']);
 
   const refs = document.createElement('canvas');
@@ -3615,6 +3640,21 @@ ILLINI_THEME = gr.themes.Default(
     button_primary_background_fill_hover="#E25504",
     button_primary_text_color="#FFFFFF",
 )
+
+# CARTO basemaps require an API key (since Aug 2026). The key comes from the
+# CARTO_KEY env var (HF Space secret) and is appended to every CARTO tile URL in
+# the map + export templates; without it tiles still load but are watermarked.
+_CARTO_KEY = os.environ.get("CARTO_KEY", "").strip()
+if _CARTO_KEY:
+    _carto_re = re.compile(r"(basemaps\.cartocdn\.com/[^'\"]*?\.png)(['\"])")
+    LEAFLET_PAGE = _carto_re.sub(r"\1?key=" + _CARTO_KEY + r"\2", LEAFLET_PAGE)
+    QUAD_PAGE = _carto_re.sub(r"\1?key=" + _CARTO_KEY + r"\2", QUAD_PAGE)
+_CARTO_GL_KEY = os.environ.get("CARTO_GL_KEY", "").strip() or _CARTO_KEY
+QUAD_PAGE = (QUAD_PAGE
+    .replace("__VSTYLE__", "https://basemaps.cartocdn.com/gl/voyager-gl-style/"
+             "style.json" + ("?key=" + _CARTO_GL_KEY if _CARTO_GL_KEY else ""))
+    .replace("__CARTOKEY__", _CARTO_GL_KEY))
+
 
 ILLINI_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Source+Sans+3:wght@400;600;700&display=swap');
