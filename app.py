@@ -2262,6 +2262,47 @@ const MERC_R = 6378137, MERC_FULL = 2*Math.PI*MERC_R;
 function mercX(lon){ return MERC_R*lon*Math.PI/180; }
 function mercY(lat){ return MERC_R*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360)); }
 
+// Vector export: render the same CARTO GL style off-screen at exactly the
+// export window/size (pixelRatio 1, no fades), then blit it. Raster fallback.
+async function drawVector(ctx, styleP, win){
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  if (!window.maplibregl) throw 'no maplibre';
+  const st = await styleP;
+  const R = 6378137, cx = (win.x0+win.x1)/2, cy = (win.y0+win.y1)/2;
+  const lon = cx/R*180/Math.PI,
+        lat = (2*Math.atan(Math.exp(cy/R))-Math.PI/2)*180/Math.PI;
+  const zoom = Math.log2(2*Math.PI*R/(512*(win.x1-win.x0)/w));
+  const div = document.createElement('div');
+  div.style.cssText = 'position:fixed;left:-100000px;top:0;width:'+w+
+                      'px;height:'+h+'px;pointer-events:none';
+  document.body.appendChild(div);
+  const m = new maplibregl.Map({container:div,
+    style:JSON.parse(JSON.stringify(st)), center:[lon,lat], zoom,
+    minZoom:0, maxZoom:24, pixelRatio:1, interactive:false,
+    attributionControl:false, fadeDuration:0, maxCanvasSize:[8192,8192],
+    canvasContextAttributes:{preserveDrawingBuffer:true},
+    preserveDrawingBuffer:true, transformRequest:cartoTR});
+  try {
+    await new Promise((res, rej)=>{
+      const t = setTimeout(()=>rej('vector export timeout'), 25000);
+      m.once('idle', ()=>{ clearTimeout(t); res(); });
+    });
+    ctx.drawImage(m.getCanvas(), 0, 0, w, h);
+  } finally { m.remove(); div.remove(); }
+}
+async function drawBaseExport(ctx, win){
+  try { await drawVector(ctx, vectorStyle(), win); }
+  catch(e){ await drawTiles(ctx,
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
+    win, ctx.canvas.width, ['a','b','c','d']); }
+}
+async function drawRoadsExport(ctx, win){
+  try { await drawVector(ctx, roadStyle(), win); }
+  catch(e){ await drawTiles(ctx,
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
+    win, ctx.canvas.width, null); }
+}
+
 async function drawTiles(ctx, tpl, win, w, subs){
   const mpp = (win.x1-win.x0)/w;
   let z = Math.round(Math.log2(MERC_FULL/(256*mpp)));
@@ -2593,15 +2634,11 @@ async function exportQuad(kind, w, h){
   exToast('Rendering basemap\\u2026', true);
   const base = document.createElement('canvas');
   base.width = qw; base.height = qh;
-  await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
-    win, qw, ['a','b','c','d']);
+  await drawBaseExport(base.getContext('2d'), win);
   const refs = document.createElement('canvas');
   refs.width = qw; refs.height = qh;
   if (document.getElementById('ck-interstates').checked)
-    await drawTiles(refs.getContext('2d'),
-      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
-      win, qw, null);
+    await drawRoadsExport(refs.getContext('2d'), win);
   if (document.getElementById('ck-counties').checked)
     drawCounties(refs.getContext('2d'), win, qw);
   drawCitiesExport(refs.getContext('2d'), win, qw, qh);
@@ -2769,15 +2806,11 @@ async function exportZV(kind, w, h){
   exToast('Rendering basemap\\u2026', true);
   const base = document.createElement('canvas');
   base.width = qw; base.height = qh;
-  await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
-    win, qw, ['a','b','c','d']);
+  await drawBaseExport(base.getContext('2d'), win);
   const refs = document.createElement('canvas');
   refs.width = qw; refs.height = qh;
   if (document.getElementById('ck-interstates').checked)
-    await drawTiles(refs.getContext('2d'),
-      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
-      win, qw, null);
+    await drawRoadsExport(refs.getContext('2d'), win);
   if (document.getElementById('ck-counties').checked)
     drawCounties(refs.getContext('2d'), win, qw);
   drawCitiesExport(refs.getContext('2d'), win, qw, qh);
@@ -2925,16 +2958,12 @@ async function exportMedia(kind, w, h){
   exToast('Rendering basemap\\u2026', true);
   const base = document.createElement('canvas');
   base.width = w; base.height = h;
-  await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
-    win, w, ['a','b','c','d']);
+  await drawBaseExport(base.getContext('2d'), win);
 
   const refs = document.createElement('canvas');
   refs.width = w; refs.height = h;
   if (document.getElementById('ck-interstates').checked)
-    await drawTiles(refs.getContext('2d'),
-      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
-      win, w, null);
+    await drawRoadsExport(refs.getContext('2d'), win);
   if (document.getElementById('ck-counties').checked)
     drawCounties(refs.getContext('2d'), win, w);
   drawCitiesExport(refs.getContext('2d'), win, w, h);
