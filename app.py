@@ -1551,25 +1551,59 @@ const panels = [];
 
 // ---- basemap: CARTO Voyager vector (MapLibre GL), raster Voyager fallback
 const VSTYLE = '__VSTYLE__', CKEY = '__CARTOKEY__';
-let _vstyleP = null;
+let _rawStyleP = null, _vstyleP = null, _rstyleP = null;
+function rawStyle(){
+  if (!_rawStyleP) _rawStyleP = fetch(VSTYLE).then(r=>{ if(!r.ok) throw r.status;
+      return r.json(); });
+  return _rawStyleP;
+}
+const cartoTR = (url)=>({url:(CKEY && /cartocdn\\.com/.test(url) &&
+  !/[?&]key=/.test(url)) ? url+(url.includes('?')?'&':'?')+'key='+CKEY : url});
+// vector highways overlay (drawn ABOVE the radar): major-road lines only
+function roadStyle(){
+  if (!_rstyleP) _rstyleP = rawStyle().then(st0=>{
+    const st = JSON.parse(JSON.stringify(st0));
+    st.layers = st.layers.filter(l=>l.type==='line' &&
+      /^(road|bridge|tunnel)_(mot|trunk|pri)_fill/.test(l.id));
+    st.layers.forEach(l=>{ const mot = /_mot_/.test(l.id),
+        trk = /_trunk_/.test(l.id);
+      l.minzoom = 0;
+      l.paint = {'line-color': mot ? '#f0a35e' : trk ? '#d9a86c' : '#9a9a9a',
+        'line-opacity': mot ? 0.95 : 0.8,
+        'line-width': ['interpolate',['linear'],['zoom'],
+          3, mot?0.6:0.3, 6, mot?1.2:0.7, 9, mot?2.2:1.2, 13, mot?4:2.4]}; });
+    return st; });
+  return _rstyleP;
+}
 function vectorStyle(){
-  if (!_vstyleP) _vstyleP = fetch(VSTYLE).then(r=>{ if(!r.ok) throw r.status;
-      return r.json(); })
-    .then(st=>{ st.layers = st.layers.filter(l=>l.type!=='symbol'); return st; });
+  if (!_vstyleP) _vstyleP = rawStyle()
+    .then(st0=>{ const st = JSON.parse(JSON.stringify(st0));
+      st.layers = st.layers.filter(l=>l.type!=='symbol');
+      st.layers.forEach(l=>{ if (l.type==='background')
+        l.paint = Object.assign({}, l.paint, {'background-color':'#000000'}); });
+      return st; });
   return _vstyleP;
+}
+// maplibre-gl-leaflet resizes its container on Leaflet 'resize', but the GL
+// canvas only follows on an explicit resize() — layers added after the panel
+// is laid out would otherwise stay at their initial size.
+function fitGL(map, lyr){
+  const go = ()=>{ const gm = lyr.getMaplibreMap && lyr.getMaplibreMap();
+    if (!gm || !lyr._map) return; gm.resize(); lyr._update(); };
+  requestAnimationFrame(go); setTimeout(go, 300);
+  map.on('resize', ()=>setTimeout(go, 50));
+  return lyr;
 }
 function addBasemap(map){
   const raster = ()=>L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png',
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png',
     {attribution:'&copy; OSM &copy; CARTO', subdomains:'abcd', maxZoom:14})
     .addTo(map);
   if (!(window.maplibregl && L.maplibreGL)) { raster(); return; }
   vectorStyle().then(st=>{
-    L.maplibreGL({style:st, interactive:false,
-      attribution:'&copy; OSM &copy; CARTO',
-      transformRequest:(url)=>({url:(CKEY && /cartocdn\\.com/.test(url) &&
-        !/[?&]key=/.test(url)) ? url+(url.includes('?')?'&':'?')+'key='+CKEY
-        : url})}).addTo(map);
+    fitGL(map, L.maplibreGL({style:JSON.parse(JSON.stringify(st)),
+      interactive:false, attribution:'&copy; OSM &copy; CARTO',
+      transformRequest:cartoTR}).addTo(map));
   }).catch(()=>raster());
 }
 
@@ -1654,9 +1688,9 @@ function makePanel(fd, first){
       }
       if (!ok) continue;
       placed.push([pt.x, pt.y]); n++;
-      g.fillStyle = '#1b1b1b';
+      g.fillStyle = '#FFFFFF';
       g.beginPath(); g.arc(pt.x, pt.y, 2.4, 0, 2*Math.PI); g.fill();
-      g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.9)';
+      g.lineWidth = 3; g.strokeStyle = 'rgba(7,16,32,.85)';
       g.strokeText(c[0], pt.x+6, pt.y);
       g.fillText(c[0], pt.x+6, pt.y);
     }
@@ -1680,10 +1714,10 @@ function makePanel(fd, first){
   map.getPane('refpane').style.zIndex = 650;
   map.getPane('refpane').style.pointerEvents = 'none';
   addBasemap(map);
-  L.circleMarker(SITE,{radius:4,color:'#222',weight:2,fillColor:'#e33',
+  L.circleMarker(SITE,{radius:4,color:'#fff',weight:2,fillColor:'#e33',
     fillOpacity:1}).addTo(map).bindTooltip('__SITE__');
   const ring = L.circle(SITE,{radius:fd.frames.length?fd.frames[0].maxr:3e5,
-    color:'#222',weight:1.2,opacity:.8,fill:false,interactive:false})
+    color:'#fff',weight:1.2,opacity:.9,fill:false,interactive:false})
     .addTo(map);
   // webgl
   const gl = cv.getContext('webgl',{premultipliedAlpha:false,alpha:true});
@@ -2012,9 +2046,19 @@ document.getElementById('sites').addEventListener('click', ()=>{
 const COUNTY_URL =
   'https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json';
 let countyLayers = null, countyLoading = false, countyGJ = null;
-const roadLayers = panels.map(p=>L.tileLayer(
+let roadLayers = null;
+const esriRoads = ()=>panels.map(p=>L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}',
   {attribution:'Esri', opacity:1.0, pane:'refpane'}));
+function ensureRoads(){
+  if (roadLayers) return Promise.resolve(roadLayers);
+  if (!(window.maplibregl && L.maplibreGL))
+    return Promise.resolve(roadLayers = esriRoads());
+  return roadStyle().then(st=>(roadLayers = panels.map(()=>L.maplibreGL({
+      style:JSON.parse(JSON.stringify(st)), pane:'refpane', interactive:false,
+      transformRequest:cartoTR}))))
+    .catch(()=>(roadLayers = esriRoads()));
+}
 document.getElementById('ck-counties').addEventListener('change', e=>{
   const lbl = e.target.nextElementSibling;
   if (e.target.checked){
@@ -2025,7 +2069,7 @@ document.getElementById('ck-counties').addEventListener('change', e=>{
     fetch(COUNTY_URL).then(r=>r.json()).then(gj=>{
       countyGJ = gj;
       countyLayers = panels.map(()=>L.geoJSON(gj,{pane:'refpane',style:
-        {color:'#4a4a4a',weight:0.7,opacity:0.85,fill:false}}));
+        {color:'#C8C6C7',weight:0.7,opacity:1.0,fill:false}}));
       if (document.getElementById('ck-counties').checked)
         countyLayers.forEach((l,i)=>l.addTo(panels[i].map));
       lbl.textContent='Counties';
@@ -2035,8 +2079,12 @@ document.getElementById('ck-counties').addEventListener('change', e=>{
     countyLayers.forEach((l,i)=>panels[i].map.removeLayer(l));
 });
 document.getElementById('ck-interstates').addEventListener('change', e=>{
-  if (e.target.checked) roadLayers.forEach((l,i)=>l.addTo(panels[i].map));
-  else roadLayers.forEach((l,i)=>panels[i].map.removeLayer(l));
+  ensureRoads().then(ls=>{
+    const on = document.getElementById('ck-interstates').checked;
+    ls.forEach((l,i)=>{ const m = panels[i].map;
+      if (on){ if (!m.hasLayer(l)){ l.addTo(m); if (l.getMaplibreMap) fitGL(m, l); } }
+      else m.removeLayer(l); });
+  });
 });
 // both overlays start enabled
 document.getElementById('ck-counties').dispatchEvent(new Event('change'));
@@ -2263,9 +2311,9 @@ function drawCitiesExport(ctx, win, w, h){
     }
     if (!ok) continue;
     placed.push([px, py]); n++;
-    ctx.fillStyle = '#1b1b1b';
+    ctx.fillStyle = '#FFFFFF';
     ctx.beginPath(); ctx.arc(px, py, fs*0.2, 0, 2*Math.PI); ctx.fill();
-    ctx.lineWidth = fs*0.25; ctx.strokeStyle = 'rgba(255,255,255,.9)';
+    ctx.lineWidth = fs*0.25; ctx.strokeStyle = 'rgba(7,16,32,.85)';
     ctx.strokeText(c[0], px+fs*0.5, py);
     ctx.fillText(c[0], px+fs*0.5, py);
   }
@@ -2276,7 +2324,7 @@ function drawCounties(ctx, win, w){
   if (!countyGJ) return;
   const mpp = (win.x1-win.x0)/w;
   ctx.save();
-  ctx.strokeStyle = '#4a4a4a'; ctx.globalAlpha = 0.85;
+  ctx.strokeStyle = '#C8C6C7'; ctx.globalAlpha = 0.9;
   ctx.lineWidth = Math.max(1, w/2200);
   const drawRing = ring=>{
     ctx.beginPath();
@@ -2546,7 +2594,7 @@ async function exportQuad(kind, w, h){
   const base = document.createElement('canvas');
   base.width = qw; base.height = qh;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
     win, qw, ['a','b','c','d']);
   const refs = document.createElement('canvas');
   refs.width = qw; refs.height = qh;
@@ -2722,7 +2770,7 @@ async function exportZV(kind, w, h){
   const base = document.createElement('canvas');
   base.width = qw; base.height = qh;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
     win, qw, ['a','b','c','d']);
   const refs = document.createElement('canvas');
   refs.width = qw; refs.height = qh;
@@ -2878,7 +2926,7 @@ async function exportMedia(kind, w, h){
   const base = document.createElement('canvas');
   base.width = w; base.height = h;
   await drawTiles(base.getContext('2d'),
-    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}@2x.png',
+    'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png',
     win, w, ['a','b','c','d']);
 
   const refs = document.createElement('canvas');
@@ -3651,7 +3699,7 @@ if _CARTO_KEY:
     QUAD_PAGE = _carto_re.sub(r"\1?key=" + _CARTO_KEY + r"\2", QUAD_PAGE)
 _CARTO_GL_KEY = os.environ.get("CARTO_GL_KEY", "").strip() or _CARTO_KEY
 QUAD_PAGE = (QUAD_PAGE
-    .replace("__VSTYLE__", "https://basemaps.cartocdn.com/gl/voyager-gl-style/"
+    .replace("__VSTYLE__", "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/"
              "style.json" + ("?key=" + _CARTO_GL_KEY if _CARTO_GL_KEY else ""))
     .replace("__CARTOKEY__", _CARTO_GL_KEY))
 
